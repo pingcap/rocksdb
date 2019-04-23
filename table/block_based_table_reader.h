@@ -104,6 +104,8 @@ class BlockBasedTable : public TableReader {
                       const SliceTransform* options_prefix_extractor,
                       const bool need_upper_bound_check);
 
+  virtual bool FilterMayMatch(const Slice& prefix, const SliceTransform* options_prefix_extractor) override;
+
   // Returns a new iterator over the table contents.
   // The result of NewIterator() is initially invalid (caller must
   // call one of the Seek methods on the iterator before using it).

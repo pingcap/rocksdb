@@ -122,6 +122,14 @@ class TableCache {
   // Release the handle from a cache
   void ReleaseHandle(Cache::Handle* handle);
 
+  bool PrefixMayMatch(const ReadOptions& options,
+                      const Slice& prefix,
+                      const InternalKeyComparator& internal_comparator,
+                      const FileMetaData& file_meta,
+                      const SliceTransform* prefix_extractor,
+                      HistogramImpl* file_read_hist, bool skip_filters,
+                      int level);
+
   // Capacity of the backing Cache that indicates inifinite TableCache capacity.
   // For example when max_open_files is -1 we set the backing Cache to this.
   static const int kInfiniteCapacity = 0x400000;

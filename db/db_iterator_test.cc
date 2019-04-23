@@ -2445,6 +2445,36 @@ TEST_P(DBIteratorTest, NonBlockingIterationBugRepro) {
   EXPECT_TRUE(iter->status().IsIncomplete());
 }
 
+TEST_P(DBIteratorTest, PrefixFilter) {
+  BlockBasedTableOptions table_opt;
+  table_opt.filter_policy.reset(NewBloomFilterPolicy(10));
+  Options opt;
+  opt.create_if_missing = true;
+  opt.prefix_extractor.reset(NewFixedPrefixTransform(1));
+  opt.table_factory.reset(new BlockBasedTableFactory(table_opt));
+  DestroyAndReopen(opt);
+  ASSERT_OK(Put("a", "v"));
+  ASSERT_OK(Put("c", "v"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("x", "v"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("y", "v"));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(1);
+  ReadOptions read_opt;
+  Slice prefix = Slice("b");
+  read_opt.total_order_seek = false;
+  read_opt.prefix = &prefix;
+  read_opt.prefix_same_as_start = true;
+  auto* iter = NewIterator(read_opt);
+  iter->Seek("b1");
+  printf("valid %d\n", iter->Valid());
+  if (iter->Valid()) {
+    printf("key %s\n", iter->key().ToString().c_str());
+  }
+  delete iter;
+}
+
 TEST_P(DBIteratorTest, SeekBackwardAfterOutOfUpperBound) {
   Put("a", "");
   Put("b", "");

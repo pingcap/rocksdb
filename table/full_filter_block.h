@@ -113,6 +113,7 @@ class FullFilterBlockReader : public FilterBlockReader {
                              const Comparator* comparator,
                              const Slice* const const_ikey_ptr, bool* filter_checked,
                              bool need_upper_bound_check) override;
+  virtual bool FilterMayMatch(const Slice& prefix) override;
  private:
   const SliceTransform* prefix_extractor_;
   Slice contents_;

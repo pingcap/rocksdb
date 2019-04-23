@@ -108,6 +108,7 @@ class FilterBlockReader {
                               const bool no_io = false,
                               const Slice* const const_ikey_ptr = nullptr) = 0;
 
+  virtual bool FilterMayMatch(const Slice& /*prefix*/) { return true; }
   virtual size_t ApproximateMemoryUsage() const = 0;
   virtual size_t size() const { return size_; }
   virtual Statistics* statistics() const { return statistics_; }

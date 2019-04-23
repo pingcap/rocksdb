@@ -122,6 +122,13 @@ class MemTable {
     return nullptr;
   }
 
+  bool PrefixMayMatch(const Slice& prefix) const {
+    if (prefix_bloom_ != nullptr) {
+      return prefix_bloom_->MayContain(prefix);
+    }
+    return true;
+  }
+
   // Returns an estimate of the number of bytes of data in use by this
   // data structure.
   //

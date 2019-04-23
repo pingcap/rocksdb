@@ -146,6 +146,10 @@ bool FullFilterBlockReader::PrefixMayMatch(
   return MayMatch(prefix);
 }
 
+bool FullFilterBlockReader::FilterMayMatch(const Slice& prefix) {
+  return MayMatch(prefix);
+}
+
 bool FullFilterBlockReader::MayMatch(const Slice& entry) {
   if (contents_.size() != 0)  {
     if (filter_bits_reader_->MayMatch(entry)) {
