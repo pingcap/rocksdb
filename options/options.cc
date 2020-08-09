@@ -203,6 +203,10 @@ void ColumnFamilyOptions::Dump(Logger* log) const {
                      level0_slowdown_writes_trigger);
     ROCKS_LOG_HEADER(log, "             Options.level0_stop_writes_trigger: %d",
                      level0_stop_writes_trigger);
+    ROCKS_LOG_HEADER(log, "              Options.flush_change_path_id_rate: %lf",
+                     flush_change_path_id_rate);
+    ROCKS_LOG_HEADER(log, "         Options.compaction_change_path_id_rate: %lf",
+                     compaction_change_path_id_rate);
     ROCKS_LOG_HEADER(
         log, "                  Options.target_file_size_base: %" PRIu64,
         target_file_size_base);

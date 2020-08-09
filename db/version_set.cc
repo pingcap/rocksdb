@@ -1573,7 +1573,7 @@ VersionStorageInfo::VersionStorageInfo(
     const InternalKeyComparator* internal_comparator,
     const Comparator* user_comparator, int levels,
     CompactionStyle compaction_style, VersionStorageInfo* ref_vstorage,
-    bool _force_consistency_checks)
+    bool _force_consistency_checks, ColumnFamilyData* cfd)
     : internal_comparator_(internal_comparator),
       user_comparator_(user_comparator),
       // cfd is nullptr if Version is dummy
@@ -1613,6 +1613,10 @@ VersionStorageInfo::VersionStorageInfo(
     current_num_samples_ = ref_vstorage->current_num_samples_;
     oldest_snapshot_seqnum_ = ref_vstorage->oldest_snapshot_seqnum_;
   }
+  if (cfd != nullptr) {
+    path_compaction_info_ = cfd->GetPathCompactionInfo();
+    path_size_capacity_ = cfd->GetGlobalPathInfo();
+  }
 }
 
 Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
@@ -1636,7 +1640,7 @@ Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
           (cfd_ == nullptr || cfd_->current() == nullptr)
               ? nullptr
               : cfd_->current()->storage_info(),
-          cfd_ == nullptr ? false : cfd_->ioptions()->force_consistency_checks),
+          cfd_ == nullptr ? false : cfd_->ioptions()->force_consistency_checks, cfd_),
       vset_(vset),
       next_(this),
       prev_(this),

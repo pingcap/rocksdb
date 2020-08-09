@@ -175,6 +175,10 @@ ColumnFamilyOptions BuildColumnFamilyOptions(
       mutable_cf_options.level0_slowdown_writes_trigger;
   cf_opts.level0_stop_writes_trigger =
       mutable_cf_options.level0_stop_writes_trigger;
+  cf_opts.flush_change_path_id_rate = 
+      mutable_cf_options.flush_change_path_id_rate;
+  cf_opts.compaction_change_path_id_rate = 
+      mutable_cf_options.compaction_change_path_id_rate;
   cf_opts.max_compaction_bytes = mutable_cf_options.max_compaction_bytes;
   cf_opts.target_file_size_base = mutable_cf_options.target_file_size_base;
   cf_opts.target_file_size_multiplier =
@@ -1866,6 +1870,14 @@ std::unordered_map<std::string, OptionTypeInfo>
          {offset_of(&ColumnFamilyOptions::level0_stop_writes_trigger),
           OptionType::kInt, OptionVerificationType::kNormal, true,
           offsetof(struct MutableCFOptions, level0_stop_writes_trigger)}},
+        {"flush_change_path_id_rate",
+         {offset_of(&ColumnFamilyOptions::flush_change_path_id_rate),
+          OptionType::kDouble, OptionVerificationType::kNormal, true,
+          offsetof(struct MutableCFOptions, flush_change_path_id_rate)}},
+        {"compaction_change_path_id_rate",
+         {offset_of(&ColumnFamilyOptions::compaction_change_path_id_rate),
+          OptionType::kDouble, OptionVerificationType::kNormal, true,
+          offsetof(struct MutableCFOptions, compaction_change_path_id_rate)}},
         {"max_grandparent_overlap_factor",
          {0, OptionType::kInt, OptionVerificationType::kDeprecated, true, 0}},
         {"max_mem_compaction_level",

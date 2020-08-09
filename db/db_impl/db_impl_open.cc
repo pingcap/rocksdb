@@ -1481,6 +1481,12 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
 #endif  // !ROCKSDB_LITE
 
   if (s.ok()) {
+    for (auto cfd : *impl->versions_->GetColumnFamilySet()) {
+      cfd->PathSizeRecorderOnAddFileWhileDBOpen();
+    }
+  }
+
+  if (s.ok()) {
     ROCKS_LOG_HEADER(impl->immutable_db_options_.info_log, "DB pointer %p",
                      impl);
     LogFlush(impl->immutable_db_options_.info_log);

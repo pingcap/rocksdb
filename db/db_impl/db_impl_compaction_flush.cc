@@ -140,20 +140,21 @@ Status DBImpl::FlushMemTableToOutputFile(
     std::vector<SequenceNumber>& snapshot_seqs,
     SequenceNumber earliest_write_conflict_snapshot,
     SnapshotChecker* snapshot_checker, LogBuffer* log_buffer,
-    Env::Priority thread_pri) {
+    Env::Priority thread_pri, bool need_change_path) {
   mutex_.AssertHeld();
   assert(cfd->imm()->NumNotFlushed() != 0);
   assert(cfd->imm()->IsFlushPending());
 
+  size_t path_id = need_change_path ? (cfd->ioptions()->cf_paths.size() - 1U) : 0U;
   FlushJob flush_job(
       dbname_, cfd, immutable_db_options_, mutable_cf_options,
       nullptr /* memtable_id */, env_options_for_compaction_, versions_.get(),
       &mutex_, &shutting_down_, snapshot_seqs, earliest_write_conflict_snapshot,
       snapshot_checker, job_context, log_buffer, directories_.GetDbDir(),
-      GetDataDir(cfd, 0U),
+      GetDataDir(cfd, path_id),
       GetCompressionFlush(*cfd->ioptions(), mutable_cf_options), stats_,
       &event_logger_, mutable_cf_options.report_bg_io_stats,
-      true /* sync_output_directory */, true /* write_manifest */, thread_pri);
+      true /* sync_output_directory */, true /* write_manifest */, thread_pri, path_id);
 
   FileMetaData file_meta;
 
@@ -230,6 +231,11 @@ Status DBImpl::FlushMemTableToOutputFile(
       }
     }
 #endif  // ROCKSDB_LITE
+
+    cfd->PathSizeRecorderOnAddFile(
+      MakeTableFileName(
+        cfd->ioptions()->cf_paths[path_id].path, file_meta.fd.GetNumber()), 
+        static_cast<uint32_t>(path_id), 0);
   }
   TEST_SYNC_POINT("DBImpl::FlushMemTableToOutputFile:Finish");
   return s;
@@ -240,7 +246,8 @@ Status DBImpl::FlushMemTablesToOutputFiles(
     JobContext* job_context, LogBuffer* log_buffer, Env::Priority thread_pri) {
   if (immutable_db_options_.atomic_flush) {
     return AtomicFlushMemTablesToOutputFiles(
-        bg_flush_args, made_progress, job_context, log_buffer, thread_pri);
+        bg_flush_args, made_progress, job_context, log_buffer, 
+        thread_pri);
   }
   std::vector<SequenceNumber> snapshot_seqs;
   SequenceNumber earliest_write_conflict_snapshot;
@@ -255,7 +262,10 @@ Status DBImpl::FlushMemTablesToOutputFiles(
     Status s = FlushMemTableToOutputFile(
         cfd, mutable_cf_options, made_progress, job_context,
         superversion_context, snapshot_seqs, earliest_write_conflict_snapshot,
-        snapshot_checker, log_buffer, thread_pri);
+        snapshot_checker, log_buffer, thread_pri, 
+        cfd->ioptions()->compaction_style == kCompactionStyleLevel &&
+        cfd->ioptions()->cf_paths.size() > 1 &&
+        arg.run_out_of_capacity_);
     if (!s.ok()) {
       status = s;
       if (!s.IsShutdownInProgress() && !s.IsColumnFamilyDropped()) {
@@ -306,10 +316,16 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
   std::vector<MutableCFOptions> all_mutable_cf_options;
   int num_cfs = static_cast<int>(cfds.size());
   all_mutable_cf_options.reserve(num_cfs);
+  std::vector<size_t> cfd_flush_path_ids;
+  cfd_flush_path_ids.reserve(num_cfs);
   for (int i = 0; i < num_cfs; ++i) {
     auto cfd = cfds[i];
-    Directory* data_dir = GetDataDir(cfd, 0U);
-    const std::string& curr_path = cfd->ioptions()->cf_paths[0].path;
+    size_t path_id = (cfd->ioptions()->compaction_style == kCompactionStyleLevel &&
+                      cfd->ioptions()->cf_paths.size() > 1U && bg_flush_args[i].run_out_of_capacity_) ?
+                      (cfd->ioptions()->cf_paths.size() - 1U) : 0U;
+    cfd_flush_path_ids.emplace_back(path_id);
+    Directory* data_dir = GetDataDir(cfd, path_id);
+    const std::string& curr_path = cfd->ioptions()->cf_paths[path_id].path;
 
     // Add to distinct output directories if eligible. Use linear search. Since
     // the number of elements in the vector is not large, performance should be
@@ -337,7 +353,7 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
         data_dir, GetCompressionFlush(*cfd->ioptions(), mutable_cf_options),
         stats_, &event_logger_, mutable_cf_options.report_bg_io_stats,
         false /* sync_output_directory */, false /* write_manifest */,
-        thread_pri));
+        thread_pri, path_id));
     jobs.back()->PickMemTable();
   }
 
@@ -523,6 +539,16 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
       }
     }
 #endif  // ROCKSDB_LITE
+    for (int i = 0; i != num_cfs; ++i) {
+      if (cfds[i]->IsDropped()) {
+        continue;
+      }
+      cfds[i]->PathSizeRecorderOnAddFile(
+        MakeTableFileName(
+            cfds[i]->ioptions()->cf_paths[cfd_flush_path_ids[i]].path, 
+            file_meta[i].fd.GetNumber()), 
+            static_cast<uint32_t>(cfd_flush_path_ids[i]), 0);
+    }
   }
 
   // Need to undo atomic flush if something went wrong, i.e. s is not OK and
@@ -2167,9 +2193,15 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
         column_families_not_to_flush.push_back(cfd);
         continue;
       }
+      std::vector<std::pair<uint64_t, uint64_t>> capactiy_info = cfd->GetGlobalPathInfo();
+      assert(capactiy_info.size() >= 1);
+      std::pair<uint64_t, uint64_t> path0_capacity_info = capactiy_info[0];
+      uint64_t estimate_size = 
+        path0_capacity_info.first + static_cast<uint64_t>(cfd->imm()->ApproximateUnflushedMemTablesMemoryUsage());
+      double capacity_rate = static_cast<double>(estimate_size) / path0_capacity_info.second;
       superversion_contexts.emplace_back(SuperVersionContext(true));
       bg_flush_args.emplace_back(cfd, iter.second,
-                                 &(superversion_contexts.back()));
+                                 &(superversion_contexts.back()), capacity_rate > 0.7);
     }
     if (!bg_flush_args.empty()) {
       break;

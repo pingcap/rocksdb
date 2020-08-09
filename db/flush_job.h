@@ -71,7 +71,7 @@ class FlushJob {
            Directory* output_file_directory, CompressionType output_compression,
            Statistics* stats, EventLogger* event_logger, bool measure_io_stats,
            const bool sync_output_directory, const bool write_manifest,
-           Env::Priority thread_pri);
+           Env::Priority thread_pri, size_t path_id = 0);
 
   ~FlushJob();
 
@@ -153,6 +153,7 @@ class FlushJob {
   Version* base_;
   bool pick_memtable_called;
   Env::Priority thread_pri_;
+  size_t path_id_;
 };
 
 }  // namespace rocksdb

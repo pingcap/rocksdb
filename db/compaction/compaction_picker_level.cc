@@ -36,6 +36,11 @@ bool LevelCompactionPicker::NeedsCompaction(
       return true;
     }
   }
+  // auto& path_compaction_info = vstorage->GetPathCompactionInfo();
+  // if (!path_compaction_info.empty()) {
+  //   return static_cast<double>(path_compaction_info[0].path_size_) /
+  //          path_compaction_info[0].path_capacity_ > 0.9;
+  // }
   return false;
 }
 
@@ -116,6 +121,7 @@ class LevelCompactionBuilder {
 
   const MutableCFOptions& mutable_cf_options_;
   const ImmutableCFOptions& ioptions_;
+  uint32_t AdjustPathId(uint32_t, uint64_t) const;
   // Pick a path ID to place a newly generated file, with its level
   static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
                             const MutableCFOptions& mutable_cf_options,
@@ -240,6 +246,30 @@ void LevelCompactionBuilder::SetupInitialFiles() {
       }
     }
   }
+
+  // if (start_level_inputs_.empty()) {
+  //   auto& path_compaction_info = vstorage_->GetPathCompactionInfo();
+  //   for (int i = 0; i < static_cast<int>(path_compaction_info.size()); i++) {
+  //     start_level_ = path_compaction_info[i].path_top_level_;
+  //     output_level_ = path_compaction_info[i].next_path_base_level_;
+  //     assert(start_level_ >= 0);
+  //     assert(start_level_ < compaction_picker_->NumberLevels());
+  //     assert(start_level_ + 1 == output_level_);
+  //     if (output_level_ >= compaction_picker_->NumberLevels()) {
+  //       continue;
+  //     }
+  //     if (PickFileToCompact()) {
+  //       if (start_level_ == 0) {
+  //         compaction_reason_ = CompactionReason::kLevelL0FilesNum;
+  //       } else {
+  //         compaction_reason_ = CompactionReason::kLevelMaxLevelSize;
+  //       }
+  //       break;
+  //     } else {
+  //       start_level_inputs_.clear();
+  //     }
+  //   }
+  // }
 
   // if we didn't find a compaction, check if there are any files marked for
   // compaction
@@ -373,7 +403,29 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
   return c;
 }
 
+uint32_t LevelCompactionBuilder::AdjustPathId(uint32_t path_id, uint64_t total_input_size) const {
+  auto& path_info = vstorage_->GetGlobalPathInfo();
+  if (path_info.empty() || path_id + 1 >= static_cast<uint32_t>(path_info.size())) {
+    return path_id;
+  }
+  uint64_t path_size = path_info[path_id].first;
+  uint64_t path_capacity = path_info[path_id].second;
+  if (static_cast<double>(path_size + total_input_size) / path_capacity > 0.7) {
+    return static_cast<uint32_t>(path_info.size()) - 1;
+  }
+  return path_id;
+}
+
 Compaction* LevelCompactionBuilder::GetCompaction() {
+  uint32_t path_id = GetPathId(ioptions_, mutable_cf_options_, output_level_);
+  uint64_t total_input_size = 0;
+  for (auto& input_files : compaction_inputs_) {
+    for (auto file : input_files.files) {
+      if (file->fd.GetPathId() == path_id) {
+        total_input_size += file->fd.GetFileSize();
+      }
+    }
+  }
   auto c = new Compaction(
       vstorage_, ioptions_, mutable_cf_options_, std::move(compaction_inputs_),
       output_level_,
@@ -381,7 +433,7 @@ Compaction* LevelCompactionBuilder::GetCompaction() {
                           ioptions_.compaction_style, vstorage_->base_level(),
                           ioptions_.level_compaction_dynamic_level_bytes),
       mutable_cf_options_.max_compaction_bytes,
-      GetPathId(ioptions_, mutable_cf_options_, output_level_),
+      AdjustPathId(path_id, total_input_size),
       GetCompressionType(ioptions_, vstorage_, mutable_cf_options_,
                          output_level_, vstorage_->base_level()),
       GetCompressionOptions(ioptions_, vstorage_, output_level_),

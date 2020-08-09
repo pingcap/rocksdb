@@ -382,6 +382,22 @@ struct AdvancedColumnFamilyOptions {
   // Dynamically changeable through SetOptions() API
   int level0_stop_writes_trigger = 36;
 
+  // When the amount of data in a file path exceeds flush_change_path_id_rate, 
+  // we change output file path id for flushing.
+  //
+  // Default: 70%
+  // 
+  // Dynamically changeable through SetOptions() API
+  double flush_change_path_id_rate = 70.0 / 100;
+
+  // When the amount of data in a file path exceeds compaction_change_path_id_rate, 
+  // we change output file path id for compacting.
+  //
+  // Default: 70%
+  // 
+  // Dynamically changeable through SetOptions() API
+  double compaction_change_path_id_rate = 70.0 / 100;
+
   // Target file size for compaction.
   // target_file_size_base is per-file size for level-1.
   // Target file size for level L can be calculated by

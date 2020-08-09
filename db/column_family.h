@@ -26,6 +26,7 @@
 #include "rocksdb/options.h"
 #include "trace_replay/block_cache_tracer.h"
 #include "util/thread_local.h"
+#include "file/path_size_recorder.h"
 
 namespace rocksdb {
 
@@ -468,6 +469,7 @@ class ColumnFamilyData {
     kL0FileCountLimit,
     kPendingCompactionBytes,
   };
+
   static std::pair<WriteStallCondition, WriteStallCause>
   GetWriteStallConditionAndCause(int num_unflushed_memtables, int num_l0_files,
                                  uint64_t num_compaction_needed_bytes,
@@ -497,6 +499,15 @@ class ColumnFamilyData {
 
   ThreadLocalPtr* TEST_GetLocalSV() { return local_sv_.get(); }
 
+  void PathSizeRecorderOnAddFile(const std::string& file_path, uint32_t path_id, int level); 
+
+  void PathSizeRecorderOnAddFileWhileDBOpen();
+
+  std::vector<std::pair<uint64_t, uint64_t>> GetLocalPathInfo();
+
+  std::vector<std::pair<uint64_t, uint64_t>> GetGlobalPathInfo();
+
+  std::vector<PathCompactionInfo> GetPathCompactionInfo();
  private:
   friend class ColumnFamilySet;
   ColumnFamilyData(uint32_t id, const std::string& name,
@@ -664,6 +675,10 @@ class ColumnFamilySet {
 
   Cache* get_table_cache() { return table_cache_; }
 
+  void PathSizeRecorderDeleteFile(const std::string& fname) {
+    psr_.OnDeleteFile(fname);
+  }
+
  private:
   friend class ColumnFamilyData;
   // helper function that gets called from cfd destructor
@@ -695,6 +710,8 @@ class ColumnFamilySet {
   WriteBufferManager* write_buffer_manager_;
   WriteController* write_controller_;
   BlockCacheTracer* const block_cache_tracer_;
+
+  PathSizeRecorder psr_;
 };
 
 // We use ColumnFamilyMemTablesImpl to provide WriteBatch a way to access

@@ -258,6 +258,7 @@ static const std::string block_cache_capacity = "block-cache-capacity";
 static const std::string block_cache_usage = "block-cache-usage";
 static const std::string block_cache_pinned_usage = "block-cache-pinned-usage";
 static const std::string options_statistics = "options-statistics";
+static const std::string paths_size = "paths-size";
 
 const std::string DB::Properties::kNumFilesAtLevelPrefix =
     rocksdb_prefix + num_files_at_level_prefix;
@@ -347,6 +348,8 @@ const std::string DB::Properties::kBlockCachePinnedUsage =
     rocksdb_prefix + block_cache_pinned_usage;
 const std::string DB::Properties::kOptionsStatistics =
     rocksdb_prefix + options_statistics;
+const std::string DB::Properties::kPathSizes = 
+    rocksdb_prefix + paths_size;
 
 const std::unordered_map<std::string, DBPropertyInfo>
     InternalStats::ppt_name_to_info = {
@@ -486,6 +489,9 @@ const std::unordered_map<std::string, DBPropertyInfo>
         {DB::Properties::kOptionsStatistics,
          {false, nullptr, nullptr, nullptr,
           &DBImpl::GetPropertyHandleOptionsStatistics}},
+        {DB::Properties::kPathSizes,
+         {false, &InternalStats::HandlePathSizeStat, nullptr, 
+          &InternalStats::HandleMapPathSize, nullptr}},
 };
 
 const DBPropertyInfo* GetPropertyInfo(const Slice& property) {
@@ -954,6 +960,37 @@ bool InternalStats::HandleBlockCachePinnedUsage(uint64_t* value, DBImpl* /*db*/,
   }
   *value = static_cast<uint64_t>(block_cache->GetPinnedUsage());
   return true;
+}
+
+bool InternalStats::HandleMapPathSize(std::map<std::string, std::string>* path_size_infos) {
+  assert(paths_size != nullptr);
+  std::vector<std::pair<uint64_t, uint64_t>> path_info = cfd_->GetLocalPathInfo();
+  for (size_t i = 0; i < path_info.size(); i++) {
+    path_size_infos->insert(std::make_pair(ToString(i), 
+                            ToString(path_info[i].first)));
+  }
+  return true;
+}
+
+bool InternalStats::HandlePathSizeStat(std::string* value, Slice /*suffix*/) {
+  std::map<std::string, std::string> path_size_info;
+  if (HandleMapPathSize(&path_size_info)) {
+    char buf[2000];
+    snprintf(buf, sizeof(buf),
+            "\n** The Amount of Data for Each Path [%s] **\n",
+            cfd_->GetName().c_str());
+    value->append(buf);
+
+    for (size_t i = 0; i < path_size_info.size(); i++) {
+      char buf2[2000];
+      snprintf(buf2, sizeof(buf2),
+               "** Path %lu : %s B\n", i, path_size_info[ToString(i)].c_str());
+      value->append(buf2);
+    }
+    return true; 
+  } else {
+    return false;
+  }
 }
 
 void InternalStats::DumpDBStats(std::string* value) {

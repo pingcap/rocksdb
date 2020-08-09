@@ -97,7 +97,7 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
                    CompressionType output_compression, Statistics* stats,
                    EventLogger* event_logger, bool measure_io_stats,
                    const bool sync_output_directory, const bool write_manifest,
-                   Env::Priority thread_pri)
+                   Env::Priority thread_pri, size_t path_id)
     : dbname_(dbname),
       cfd_(cfd),
       db_options_(db_options),
@@ -123,7 +123,8 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
       edit_(nullptr),
       base_(nullptr),
       pick_memtable_called(false),
-      thread_pri_(thread_pri) {
+      thread_pri_(thread_pri),
+      path_id_(path_id) {
   // Update the thread status to indicate flush.
   ReportStartedFlush();
   TEST_SYNC_POINT("FlushJob::FlushJob()");
@@ -184,7 +185,8 @@ void FlushJob::PickMemTable() {
   edit_->SetColumnFamily(cfd_->GetID());
 
   // path 0 for level 0 file.
-  meta_.fd = FileDescriptor(versions_->NewFileNumber(), 0, 0);
+  meta_.fd = FileDescriptor(versions_->NewFileNumber(), 
+      static_cast<uint32_t>(path_id_), 0);
 
   base_ = cfd_->current();
   base_->Ref();  // it is likely that we do not need this reference

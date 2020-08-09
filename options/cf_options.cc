@@ -157,6 +157,10 @@ void MutableCFOptions::Dump(Logger* log) const {
                  level0_slowdown_writes_trigger);
   ROCKS_LOG_INFO(log, "               level0_stop_writes_trigger: %d",
                  level0_stop_writes_trigger);
+  ROCKS_LOG_INFO(log, "               flush_change_path_id_rate: %lf",
+                 flush_change_path_id_rate);
+  ROCKS_LOG_INFO(log, "          compaction_change_path_id_rate: %lf",
+                 compaction_change_path_id_rate);
   ROCKS_LOG_INFO(log, "                     max_compaction_bytes: %" PRIu64,
                  max_compaction_bytes);
   ROCKS_LOG_INFO(log, "                    target_file_size_base: %" PRIu64,

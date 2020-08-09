@@ -47,6 +47,7 @@
 #include "table/get_context.h"
 #include "table/multiget_context.h"
 #include "trace_replay/block_cache_tracer.h"
+#include "file/path_size_recorder.h"
 
 namespace rocksdb {
 
@@ -101,7 +102,8 @@ class VersionStorageInfo {
                      const Comparator* user_comparator, int num_levels,
                      CompactionStyle compaction_style,
                      VersionStorageInfo* src_vstorage,
-                     bool _force_consistency_checks);
+                     bool _force_consistency_checks,
+                     ColumnFamilyData* cfd = nullptr);
   ~VersionStorageInfo();
 
   void Reserve(int level, size_t size) { files_[level].reserve(size); }
@@ -418,6 +420,14 @@ class VersionStorageInfo {
                                      const Slice& largest_user_key,
                                      int last_level, int last_l0_idx);
 
+  const std::vector<PathCompactionInfo>& GetPathCompactionInfo() const {
+    return path_compaction_info_;
+  }
+
+  const std::vector<std::pair<uint64_t, uint64_t>>& GetGlobalPathInfo() const {
+    return path_size_capacity_;
+  }
+
  private:
   const InternalKeyComparator* internal_comparator_;
   const Comparator* user_comparator_;
@@ -532,6 +542,10 @@ class VersionStorageInfo {
   // If set to true, we will run consistency checks even if RocksDB
   // is compiled in release mode
   bool force_consistency_checks_;
+
+  std::vector<PathCompactionInfo> path_compaction_info_;
+
+  std::vector<std::pair<uint64_t, uint64_t>> path_size_capacity_;
 
   friend class Version;
   friend class VersionSet;

@@ -295,6 +295,16 @@ ColumnFamilyOptions SanitizeOptions(const ImmutableDBOptions& db_options,
                    result.level0_file_num_compaction_trigger);
   }
 
+  if (result.flush_change_path_id_rate <= 0.0 || 
+      result.flush_change_path_id_rate > 1.0) {
+    result.flush_change_path_id_rate = 70.0 / 100;
+  }
+
+  if (result.compaction_change_path_id_rate <= 0.0 || 
+      result.compaction_change_path_id_rate > 1.0) {
+    result.compaction_change_path_id_rate = 70.0 / 100;
+  }
+
   if (result.soft_pending_compaction_bytes_limit == 0) {
     result.soft_pending_compaction_bytes_limit =
         result.hard_pending_compaction_bytes_limit;
@@ -1262,6 +1272,38 @@ Directory* ColumnFamilyData::GetDataDir(size_t path_id) const {
   return data_dirs_[path_id].get();
 }
 
+void ColumnFamilyData::PathSizeRecorderOnAddFile(const std::string& file_path, 
+                                                 uint32_t path_id, int level) {
+  assert(column_family_set_ != nullptr);
+  column_family_set_->psr_.OnAddFile(file_path, GetID(), path_id, level);
+}
+
+void ColumnFamilyData::PathSizeRecorderOnAddFileWhileDBOpen() {
+  assert(column_family_set_ != nullptr && current_ != nullptr);
+  const VersionStorageInfo* vstorage = current_->storage_info();
+  for (int i = 0; i < vstorage->num_levels(); i++) {
+    if (vstorage->LevelFiles(i).empty())
+      continue;
+    for (auto meta_data : vstorage->LevelFiles(i)) {
+        std::string file_name = 
+          TableFileName(ioptions_.cf_paths, meta_data->fd.GetNumber(), meta_data->fd.GetPathId());
+        column_family_set_->psr_.OnAddFile(file_name, GetID(), meta_data->fd.GetPathId(), i);
+    }
+  }
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> ColumnFamilyData::GetLocalPathInfo() {
+  return column_family_set_->psr_.GetLocalPathSizeAndCapacity(GetID());
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> ColumnFamilyData::GetGlobalPathInfo() {
+  return column_family_set_->psr_.GetGlobalPathSizeAndCapacity(GetID());
+}
+
+std::vector<PathCompactionInfo> ColumnFamilyData::GetPathCompactionInfo() {
+  return column_family_set_->psr_.GetPathCompactionInfos(GetID());
+}
+
 ColumnFamilySet::ColumnFamilySet(const std::string& dbname,
                                  const ImmutableDBOptions* db_options,
                                  const EnvOptions& env_options,
@@ -1280,7 +1322,8 @@ ColumnFamilySet::ColumnFamilySet(const std::string& dbname,
       table_cache_(table_cache),
       write_buffer_manager_(write_buffer_manager),
       write_controller_(write_controller),
-      block_cache_tracer_(block_cache_tracer) {
+      block_cache_tracer_(block_cache_tracer),
+      psr_(db_options_->env) {
   // initialize linked list
   dummy_cfd_->prev_ = dummy_cfd_;
   dummy_cfd_->next_ = dummy_cfd_;
@@ -1345,6 +1388,7 @@ size_t ColumnFamilySet::NumberOfColumnFamilies() const {
 ColumnFamilyData* ColumnFamilySet::CreateColumnFamily(
     const std::string& name, uint32_t id, Version* dummy_versions,
     const ColumnFamilyOptions& options) {
+  bool is_cf_paths_empty = options.cf_paths.empty();
   assert(column_families_.find(name) == column_families_.end());
   ColumnFamilyData* new_cfd = new ColumnFamilyData(
       id, name, dummy_versions, table_cache_, write_buffer_manager_, options,
@@ -1361,6 +1405,8 @@ ColumnFamilyData* ColumnFamilySet::CreateColumnFamily(
   if (id == 0) {
     default_cfd_cache_ = new_cfd;
   }
+
+  psr_.AddCfPaths(new_cfd->GetID(), new_cfd->ioptions()->cf_paths, is_cf_paths_empty);
   return new_cfd;
 }
 
