@@ -436,6 +436,7 @@ TESTS = \
 	env_logger_test \
 	hash_test \
 	thread_local_test \
+	work_queue_test \
 	rate_limiter_test \
 	perf_context_test \
 	iostats_context_test \
@@ -1194,6 +1195,9 @@ histogram_test: monitoring/histogram_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 thread_local_test: util/thread_local_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+work_queue_test: util/work_queue_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 corruption_test: db/corruption_test.o $(LIBOBJECTS) $(TESTHARNESS)
