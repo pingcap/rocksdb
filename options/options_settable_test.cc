@@ -360,6 +360,8 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
        sizeof(std::shared_ptr<ConcurrentTaskLimiter>)},
       {offset_of(&ColumnFamilyOptions::sst_partitioner_factory),
        sizeof(std::shared_ptr<SstPartitionerFactory>)},
+      {offset_of(&ColumnFamilyOptions::level_region_accessor),
+          sizeof(std::shared_ptr<LevelRegionAccessor>)},
   };
 
   char* options_ptr = new char[sizeof(ColumnFamilyOptions)];
@@ -400,6 +402,7 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
   options->max_mem_compaction_level = 0;
   options->compaction_filter = nullptr;
   options->sst_partitioner_factory = nullptr;
+  options->level_region_accessor = nullptr;
 
   char* new_options_ptr = new char[sizeof(ColumnFamilyOptions)];
   ColumnFamilyOptions* new_options =
