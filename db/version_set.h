@@ -101,7 +101,7 @@ class VersionStorageInfo {
                      const Comparator* user_comparator, int num_levels,
                      CompactionStyle compaction_style,
                      VersionStorageInfo* src_vstorage,
-                     bool _force_consistency_checks);
+                     bool _force_consistency_checks, bool _dynamic_level_bytes);
   ~VersionStorageInfo();
 
   void Reserve(int level, size_t size) { files_[level].reserve(size); }
@@ -164,7 +164,7 @@ class VersionStorageInfo {
   void ComputeBottommostFilesMarkedForCompaction();
 
   // Generate level_files_brief_ from files_
-  void GenerateLevelFilesBrief();
+  void GenerateLevelFilesBrief(const MutableCFOptions& options);
   // Sort all files for this version based on their file size and
   // record results in files_by_compaction_pri_. The largest files are listed
   // first.
@@ -187,6 +187,9 @@ class VersionStorageInfo {
 
   int MaxInputLevel() const;
   int MaxOutputLevel(bool allow_ingest_behind) const;
+
+  bool CanIgnoreFile(FileMetaData* f, int level) const;
+  bool LikelyIngestedFile(FileMetaData* f, int level) const;
 
   // Return level number that has idx'th highest score
   int CompactionScoreLevel(int idx) const { return compaction_level_[idx]; }
@@ -532,6 +535,7 @@ class VersionStorageInfo {
   // If set to true, we will run consistency checks even if RocksDB
   // is compiled in release mode
   bool force_consistency_checks_;
+  bool dynamic_level_bytes_;
 
   friend class Version;
   friend class VersionSet;

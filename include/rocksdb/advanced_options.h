@@ -483,6 +483,17 @@ struct AdvancedColumnFamilyOptions {
   // Default: false
   bool level_compaction_dynamic_level_bytes = false;
 
+  // The ratio to calcuate the total tolerant bytes of ingested files for one
+  // level.
+  // tolerant_bytes = ingest_tolerant_ratio /
+  //                  (level - base_level + 1) * level_max_bytes.
+  // With ingest tolerant bytes, the compaction wouldn't be triggered until
+  // bytes_without_ingest + ingest_bytes > level_max_bytes + tolerant_bytes.
+  // Only effective when level_compaction_dynamic_level_bytes is enabled.
+  //
+  // Default: 0
+  size_t ingest_tolerant_ratio = 0;
+
   // Default: 10.
   //
   // Dynamically changeable through SetOptions() API

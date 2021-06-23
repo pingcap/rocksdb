@@ -461,7 +461,8 @@ TEST_F(OptionsSettableTest, ColumnFamilyOptionsAllFieldsSettable) {
       "periodic_compaction_seconds=3600;"
       "sample_for_compression=0;"
       "compaction_options_fifo={max_table_files_size=3;allow_"
-      "compaction=false;};",
+      "compaction=false;};"
+      "ingest_tolerant_ratio=5;",
       new_options));
 
   ASSERT_EQ(unset_bytes_base,

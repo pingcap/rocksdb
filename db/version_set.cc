@@ -772,6 +772,9 @@ void DoGenerateLevelFilesBrief(LevelFilesBrief* file_level,
   file_level->num_files = num;
   char* mem = arena->AllocateAligned(num * sizeof(FdWithKeyRange));
   file_level->files = new (mem)FdWithKeyRange[num];
+  file_level->num_ingested_files = 0;
+  file_level->num_ingested_bytes = 0;
+  file_level->num_tolerant_bytes = 0;
 
   for (size_t i = 0; i < num; i++) {
     Slice smallest_key = files[i]->smallest.Encode();
@@ -1628,7 +1631,7 @@ VersionStorageInfo::VersionStorageInfo(
     const InternalKeyComparator* internal_comparator,
     const Comparator* user_comparator, int levels,
     CompactionStyle compaction_style, VersionStorageInfo* ref_vstorage,
-    bool _force_consistency_checks)
+    bool _force_consistency_checks, bool dynamic_level_bytes)
     : internal_comparator_(internal_comparator),
       user_comparator_(user_comparator),
       // cfd is nullptr if Version is dummy
@@ -1655,7 +1658,8 @@ VersionStorageInfo::VersionStorageInfo(
       current_num_samples_(0),
       estimated_compaction_needed_bytes_(0),
       finalized_(false),
-      force_consistency_checks_(_force_consistency_checks) {
+      force_consistency_checks_(_force_consistency_checks),
+      dynamic_level_bytes_(dynamic_level_bytes) {
   if (ref_vstorage != nullptr) {
     accumulated_file_size_ = ref_vstorage->accumulated_file_size_;
     accumulated_raw_key_size_ = ref_vstorage->accumulated_raw_key_size_;
@@ -1691,7 +1695,10 @@ Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
           (cfd_ == nullptr || cfd_->current() == nullptr)
               ? nullptr
               : cfd_->current()->storage_info(),
-          cfd_ == nullptr ? false : cfd_->ioptions()->force_consistency_checks),
+          cfd_ == nullptr ? false : cfd_->ioptions()->force_consistency_checks,
+          cfd_ == nullptr
+              ? false
+              : cfd_->ioptions()->level_compaction_dynamic_level_bytes),
       vset_(vset),
       next_(this),
       prev_(this),
@@ -2036,11 +2043,25 @@ bool Version::IsFilterSkipped(int level, bool is_file_last_in_level) {
          level == storage_info_.num_non_empty_levels() - 1;
 }
 
-void VersionStorageInfo::GenerateLevelFilesBrief() {
+void VersionStorageInfo::GenerateLevelFilesBrief(
+    const MutableCFOptions& options) {
   level_files_brief_.resize(num_non_empty_levels_);
   for (int level = 0; level < num_non_empty_levels_; level++) {
     DoGenerateLevelFilesBrief(
         &level_files_brief_[level], files_[level], &arena_);
+    for (const auto& f : files_[level]) {
+      if (CanIgnoreFile(f, level)) {
+        level_files_brief_[level].num_ingested_files += 1;
+        level_files_brief_[level].num_ingested_bytes += f->fd.GetFileSize();
+      }
+    }
+    if (level >= base_level_) {
+      level_files_brief_[level].num_tolerant_bytes =
+          static_cast<double>(options.ingest_tolerant_ratio) /
+          (level - base_level_ + 1) * MaxBytesForLevel(level);
+    } else {
+      level_files_brief_[level].num_tolerant_bytes = 0;
+    }
   }
 }
 
@@ -2055,7 +2076,7 @@ void Version::PrepareApply(
   storage_info_.CalculateBaseBytes(*cfd_->ioptions(), mutable_cf_options);
   storage_info_.UpdateFilesByCompactionPri(cfd_->ioptions()->compaction_pri);
   storage_info_.GenerateFileIndexer();
-  storage_info_.GenerateLevelFilesBrief();
+  storage_info_.GenerateLevelFilesBrief(mutable_cf_options);
   storage_info_.GenerateLevel0NonOverlapping();
   storage_info_.GenerateBottommostFiles();
 }
@@ -2209,6 +2230,22 @@ int VersionStorageInfo::MaxOutputLevel(bool allow_ingest_behind) const {
   return num_levels() - 1;
 }
 
+bool VersionStorageInfo::CanIgnoreFile(FileMetaData* f, int level) const {
+  // only ignore files when dynamic level bytes enabled.
+  return dynamic_level_bytes_ && LikelyIngestedFile(f, level);
+}
+
+bool VersionStorageInfo::LikelyIngestedFile(FileMetaData* f, int level) const {
+  // A file is an ingested file iff it has
+  // ExternalSstFilePropertyNames::kVersion property. But it's hard to get the
+  // information here, so using smallest_seqno == largest_seqno to decide if it
+  // is an ingested file. Files that have zero-out sequence number also satisfy
+  // the condition, so here excludes the files in the bottom level with zero
+  // sequence number.
+  return f->fd.smallest_seqno == f->fd.largest_seqno &&
+         (num_levels() - 1 != level || f->fd.largest_seqno != 0);
+}
+
 void VersionStorageInfo::EstimateCompactionBytesNeeded(
     const MutableCFOptions& mutable_cf_options) {
   // Only implemented for level-based compaction
@@ -2252,6 +2289,7 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
 #ifndef NDEBUG
       uint64_t level_size2 = 0;
       for (auto* f : files_[level]) {
+        if (mutable_cf_options.ingest_tolerant_ratio != 0 && CanIgnoreFile(f, level)) continue;
         level_size2 += f->fd.GetFileSize();
       }
       assert(level_size2 == bytes_next_level);
@@ -2260,6 +2298,7 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
       bytes_next_level = 0;
     } else {
       for (auto* f : files_[level]) {
+        if (mutable_cf_options.ingest_tolerant_ratio != 0 && CanIgnoreFile(f, level)) continue;
         level_size += f->fd.GetFileSize();
       }
     }
@@ -2279,6 +2318,7 @@ void VersionStorageInfo::EstimateCompactionBytesNeeded(
       assert(bytes_next_level == 0);
       if (level + 1 < num_levels_) {
         for (auto* f : files_[level + 1]) {
+          if (mutable_cf_options.ingest_tolerant_ratio != 0 && CanIgnoreFile(f, level + 1)) continue;
           bytes_next_level += f->fd.GetFileSize();
         }
       }
@@ -2387,13 +2427,35 @@ void VersionStorageInfo::ComputeCompactionScore(
     } else {
       // Compute the ratio of current size to size limit.
       uint64_t level_bytes_no_compacting = 0;
+      uint64_t ingest_files_size = 0;
       for (auto f : files_[level]) {
         if (!f->being_compacted) {
-          level_bytes_no_compacting += f->compensated_file_size;
+          if (mutable_cf_options.ingest_tolerant_ratio != 0 && CanIgnoreFile(f, level)) {
+            ingest_files_size += f->compensated_file_size;
+          } else {
+            level_bytes_no_compacting += f->compensated_file_size;
+          }
         }
       }
       score = static_cast<double>(level_bytes_no_compacting) /
               MaxBytesForLevel(level);
+
+      if (level >= base_level_ && dynamic_level_bytes_ &&
+          mutable_cf_options.ingest_tolerant_ratio != 0 &&
+          level_bytes_no_compacting + ingest_files_size >
+              (1 +
+               static_cast<double>(mutable_cf_options.ingest_tolerant_ratio) /
+                   (level - base_level_ + 1)) *
+                  MaxBytesForLevel(level)) {
+        score = std::max(
+            score,
+            static_cast<double>(level_bytes_no_compacting + ingest_files_size) /
+                ((1 +
+                  static_cast<double>(
+                      mutable_cf_options.ingest_tolerant_ratio) /
+                      (level - base_level_ + 1)) *
+                 MaxBytesForLevel(level)));
+      }
     }
     compaction_level_[level] = level;
     compaction_score_[level] = score;
@@ -3164,13 +3226,13 @@ void VersionStorageInfo::CalculateBaseBytes(const ImmutableCFOptions& ioptions,
   }
   set_l0_delay_trigger_count(num_l0_count);
 
-  level_max_bytes_.resize(ioptions.num_levels);
-  if (!ioptions.level_compaction_dynamic_level_bytes) {
-    base_level_ = (ioptions.compaction_style == kCompactionStyleLevel) ? 1 : -1;
+  level_max_bytes_.resize(num_levels_);
+  if (!dynamic_level_bytes_) {
+    base_level_ = (compaction_style_ == kCompactionStyleLevel) ? 1 : -1;
 
     // Calculate for static bytes base case
-    for (int i = 0; i < ioptions.num_levels; ++i) {
-      if (i == 0 && ioptions.compaction_style == kCompactionStyleUniversal) {
+    for (int i = 0; i < num_levels_; ++i) {
+      if (i == 0 && compaction_style_ == kCompactionStyleUniversal) {
         level_max_bytes_[i] = options.max_bytes_for_level_base;
       } else if (i > 1) {
         level_max_bytes_[i] = MultiplyCheckOverflow(
