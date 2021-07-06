@@ -89,6 +89,7 @@ class VersionBuilder::Rep {
   VersionStorageInfo* base_vstorage_;
   int num_levels_;
   LevelState* levels_;
+  std::unordered_map<uint64_t, FileMetaData*> deleted_base_files_;
   // Store states of levels larger than num_levels_. We do this instead of
   // storing them in levels_ to avoid regression in case there are no files
   // on invalid levels. The version is not consistent if in the end the files
@@ -128,8 +129,7 @@ class VersionBuilder::Rep {
   }
 
   void UnrefFile(FileMetaData* f) {
-    f->refs--;
-    if (f->refs <= 0) {
+    if (f->Unref()) {
       if (f->table_reader_handle) {
         assert(table_cache_ != nullptr);
         table_cache_->ReleaseHandle(f->table_reader_handle);
@@ -406,9 +406,13 @@ class VersionBuilder::Rep {
       while (added_iter != added_end || base_iter != base_end) {
         if (base_iter == base_end ||
                 (added_iter != added_end && cmp(*added_iter, *base_iter))) {
-          MaybeAddFile(vstorage, level, *added_iter++);
+          s = MaybeAddFile(vstorage, level, *added_iter++,
+                           base_vstorage_->max_file_number());
+          if (!s.ok()) {
+            return s;
+          }
         } else {
-          MaybeAddFile(vstorage, level, *base_iter++);
+          MaybeInheritFile(vstorage, level, *base_iter++);
         }
       }
     }
@@ -514,13 +518,35 @@ class VersionBuilder::Rep {
     return Status::OK();
   }
 
-  void MaybeAddFile(VersionStorageInfo* vstorage, int level, FileMetaData* f) {
+  void MaybeInheritFile(VersionStorageInfo* vstorage, int level,
+                        FileMetaData* f) {
     if (levels_[level].deleted_files.count(f->fd.GetNumber()) > 0) {
+      // f is to-be-deleted table file
+      vstorage->RemoveCurrentStats(f);
+      deleted_base_files_[f->fd.GetNumber()] = f;
+    } else {
+      vstorage->AddFile(level, f, info_log_);
+    }
+  }
+
+  Status MaybeAddFile(VersionStorageInfo* vstorage, int level, FileMetaData* f,
+                      uint64_t base_max_file_number) {
+    if (f->fd.GetNumber() <= base_max_file_number) {
+      auto it = deleted_base_files_.find(f->fd.GetNumber());
+      if (it == deleted_base_files_.end()) {
+        return Status::Corruption("Attemp to add file number (" +
+                                  std::to_string(f->fd.GetNumber()) +
+                                  ") smaller than newest one (" +
+                                  std::to_string(base_max_file_number) + ")");
+      }
+      vstorage->AddFile(level, it->second, info_log_);
+    } else if (levels_[level].deleted_files.count(f->fd.GetNumber()) > 0) {
       // f is to-be-deleted table file
       vstorage->RemoveCurrentStats(f);
     } else {
       vstorage->AddFile(level, f, info_log_);
     }
+    return Status::OK();
   }
 };
 
@@ -557,11 +583,6 @@ Status VersionBuilder::LoadTableHandlers(
   return rep_->LoadTableHandlers(internal_stats, max_threads,
                                  prefetch_index_and_filter_in_cache,
                                  is_initial_load, prefix_extractor);
-}
-
-void VersionBuilder::MaybeAddFile(VersionStorageInfo* vstorage, int level,
-                                  FileMetaData* f) {
-  rep_->MaybeAddFile(vstorage, level, f);
 }
 
 }  // namespace rocksdb
