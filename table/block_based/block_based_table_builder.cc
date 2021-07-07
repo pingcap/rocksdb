@@ -338,6 +338,9 @@ struct BlockBasedTableBuilder::Rep {
 
   const bool use_delta_encoding_for_index_values;
   std::unique_ptr<FilterBlockBuilder> filter_builder;
+
+  char cache_key_prefix[BlockBasedTable::kMaxCacheKeyPrefixSize];
+  size_t cache_key_prefix_size;
   char compressed_cache_key_prefix[BlockBasedTable::kMaxCacheKeyPrefixSize];
   size_t compressed_cache_key_prefix_size;
 
@@ -346,6 +349,7 @@ struct BlockBasedTableBuilder::Rep {
   std::string compressed_output;
   std::unique_ptr<FlushBlockPolicy> flush_block_policy;
   uint32_t column_family_id;
+  int32_t level;
   const std::string& column_family_name;
   uint64_t creation_time = 0;
   uint64_t oldest_key_time = 0;
@@ -359,7 +363,7 @@ struct BlockBasedTableBuilder::Rep {
       const InternalKeyComparator& icomparator,
       const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
           int_tbl_prop_collector_factories,
-      uint32_t _column_family_id, WritableFileWriter* f,
+      uint32_t _column_family_id, const int32_t _level, WritableFileWriter* f,
       const CompressionType _compression_type,
       const uint64_t _sample_for_compression,
       const CompressionOptions& _compression_opts, const bool skip_filters,
@@ -394,11 +398,13 @@ struct BlockBasedTableBuilder::Rep {
                                                      : State::kUnbuffered),
         use_delta_encoding_for_index_values(table_opt.format_version >= 4 &&
                                             !table_opt.block_align),
+        cache_key_prefix_size(0),
         compressed_cache_key_prefix_size(0),
         flush_block_policy(
             table_options.flush_block_policy_factory->NewFlushBlockPolicy(
                 table_options, data_block)),
         column_family_id(_column_family_id),
+        level(_level),
         column_family_name(_column_family_name),
         creation_time(_creation_time),
         oldest_key_time(_oldest_key_time),
@@ -450,7 +456,7 @@ BlockBasedTableBuilder::BlockBasedTableBuilder(
     const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
-    uint32_t column_family_id, WritableFileWriter* file,
+    uint32_t column_family_id, const int32_t level, WritableFileWriter* file,
     const CompressionType compression_type,
     const uint64_t sample_for_compression,
     const CompressionOptions& compression_opts, const bool skip_filters,
@@ -471,13 +477,18 @@ BlockBasedTableBuilder::BlockBasedTableBuilder(
 
   rep_ =
       new Rep(ioptions, moptions, sanitized_table_options, internal_comparator,
-              int_tbl_prop_collector_factories, column_family_id, file,
+              int_tbl_prop_collector_factories, column_family_id, level, file,
               compression_type, sample_for_compression, compression_opts,
               skip_filters, column_family_name, creation_time, oldest_key_time,
               target_file_size, file_creation_time);
 
   if (rep_->filter_builder != nullptr) {
     rep_->filter_builder->StartBlock(0);
+  }
+  if (table_options.block_cache.get() != nullptr) {
+    BlockBasedTable::GenerateCachePrefix(
+        table_options.block_cache.get(), file->writable_file(),
+        &rep_->cache_key_prefix[0], &rep_->cache_key_prefix_size);
   }
   if (table_options.block_cache_compressed.get() != nullptr) {
     BlockBasedTable::GenerateCachePrefix(
@@ -703,6 +714,12 @@ void BlockBasedTableBuilder::WriteBlock(const Slice& raw_block_contents,
     RecordTick(r->ioptions.statistics, NUMBER_BLOCK_NOT_COMPRESSED);
   }
 
+  if (is_data_block && r->table_options.refill_block_cache_level >= r->level &&
+      r->level >= 0) {
+    handle->set_offset(r->offset);
+    handle->set_size(raw_block_contents.size());
+    InsertBlockInCacheUncompressed(raw_block_contents, handle);
+  }
   WriteRawBlock(block_contents, type, handle, is_data_block);
   r->compressed_output.clear();
   if (is_data_block) {
@@ -766,8 +783,8 @@ void BlockBasedTableBuilder::WriteRawBlock(const Slice& block_contents,
         "BlockBasedTableBuilder::WriteRawBlock:TamperWithChecksum",
         static_cast<char*>(trailer));
     r->status = r->file->Append(Slice(trailer, kBlockTrailerSize));
-    if (r->status.ok()) {
-      r->status = InsertBlockInCache(block_contents, type, handle);
+    if (r->status.ok() && type != kNoCompression) {
+      r->status = InsertBlockInCacheCompressed(block_contents, type, handle);
     }
     if (r->status.ok()) {
       r->offset += block_contents.size() + kBlockTrailerSize;
@@ -787,21 +804,23 @@ void BlockBasedTableBuilder::WriteRawBlock(const Slice& block_contents,
 
 Status BlockBasedTableBuilder::status() const { return rep_->status; }
 
-static void DeleteCachedBlockContents(const Slice& /*key*/, void* value) {
-  BlockContents* bc = reinterpret_cast<BlockContents*>(value);
-  delete bc;
+template <class ContentType>
+void DeleteCachedContent(const Slice& /*key*/, void* value) {
+  auto content = reinterpret_cast<ContentType*>(value);
+  delete content;
 }
 
 //
 // Make a copy of the block contents and insert into compressed block cache
 //
-Status BlockBasedTableBuilder::InsertBlockInCache(const Slice& block_contents,
-                                                  const CompressionType type,
-                                                  const BlockHandle* handle) {
+Status BlockBasedTableBuilder::InsertBlockInCacheCompressed(
+    const Slice& block_contents, const CompressionType type,
+    const BlockHandle* handle) {
+  assert(type != kNoCompression);
   Rep* r = rep_;
   Cache* block_cache_compressed = r->table_options.block_cache_compressed.get();
 
-  if (type != kNoCompression && block_cache_compressed != nullptr) {
+  if (block_cache_compressed != nullptr) {
     size_t size = block_contents.size();
 
     auto ubuf =
@@ -826,11 +845,43 @@ Status BlockBasedTableBuilder::InsertBlockInCache(const Slice& block_contents,
     block_cache_compressed->Insert(
         key, block_contents_to_cache,
         block_contents_to_cache->ApproximateMemoryUsage(),
-        &DeleteCachedBlockContents);
+        &DeleteCachedContent<BlockContents>);
 
     // Invalidate OS cache.
     r->file->InvalidateCache(static_cast<size_t>(r->offset), size);
   }
+  return Status::OK();
+}
+
+//
+// Make a copy of the block contents and insert into uncompressed block cache
+//
+Status BlockBasedTableBuilder::InsertBlockInCacheUncompressed(
+    const Slice& block_contents, const BlockHandle* handle) {
+  Rep* r = rep_;
+  Cache* block_cache = r->table_options.block_cache.get();
+
+  if (block_cache != nullptr) {
+    size_t size = block_contents.size();
+    auto buf = AllocateBlock(size, block_cache->memory_allocator());
+    memcpy(buf.get(), block_contents.data(), size);
+    BlockContents results(std::move(buf), size);
+
+    char
+        cache_key[BlockBasedTable::kMaxCacheKeyPrefixSize + kMaxVarint64Length];
+    Slice key = BlockBasedTable::GetCacheKey(
+        r->cache_key_prefix, r->cache_key_prefix_size, *handle, cache_key);
+
+    Block* block = new Block(std::move(results), kDisableGlobalSequenceNumber);
+    size_t charge = block->ApproximateMemoryUsage();
+
+    block_cache->Insert(key, block, charge, &DeleteCachedContent<Block>);
+    RecordTick(r->ioptions.statistics, BLOCK_CACHE_ADD);
+    RecordTick(r->ioptions.statistics, BLOCK_CACHE_DATA_ADD);
+    RecordTick(r->ioptions.statistics, BLOCK_CACHE_BYTES_WRITE, charge);
+    RecordTick(r->ioptions.statistics, BLOCK_CACHE_DATA_BYTES_INSERT, charge);
+  }
+
   return Status::OK();
 }
 
@@ -846,6 +897,12 @@ void BlockBasedTableBuilder::WriteFilterBlock(
           rep_->filter_builder->Finish(filter_block_handle, &s);
       assert(s.ok() || s.IsIncomplete());
       rep_->props.filter_size += filter_content.size();
+      if (rep_->table_options.refill_filter_and_index_level >= rep_->level &&
+          rep_->level >= 0) {
+        filter_block_handle.set_offset(rep_->offset);
+        filter_block_handle.set_size(filter_content.size());
+        InsertBlockInCacheUncompressed(filter_content, &filter_block_handle);
+      }
       WriteRawBlock(filter_content, kNoCompression, &filter_block_handle);
     }
   }
@@ -888,6 +945,12 @@ void BlockBasedTableBuilder::WriteIndexBlock(
     }
   }
   if (ok()) {
+    if (rep_->table_options.refill_filter_and_index_level >= rep_->level &&
+        rep_->level >= 0) {
+      index_block_handle->set_offset(rep_->offset);
+      index_block_handle->set_size(index_blocks.index_block_contents.size());
+      InsertBlockInCacheUncompressed(index_blocks.index_block_contents, index_block_handle);
+    }
     if (rep_->table_options.enable_index_compression) {
       WriteBlock(index_blocks.index_block_contents, index_block_handle, false);
     } else {

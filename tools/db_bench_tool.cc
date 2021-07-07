@@ -377,7 +377,7 @@ DEFINE_int32(compaction_style, (int32_t) rocksdb::Options().compaction_style,
 
 static rocksdb::CompactionPri FLAGS_compaction_pri_e;
 DEFINE_int32(compaction_pri, (int32_t)rocksdb::Options().compaction_pri,
-             "priority of files to compaction: by size or by data age");
+             "priority of files to compact: by size or by data age");
 
 DEFINE_int32(universal_size_ratio, 0,
              "Percentage flexibility while comparing file size"
@@ -472,6 +472,14 @@ DEFINE_bool(enable_index_compression,
 
 DEFINE_bool(block_align, rocksdb::BlockBasedTableOptions().block_align,
             "Align data blocks on page size");
+
+DEFINE_int32(refill_block_cache_level,
+             rocksdb::BlockBasedTableOptions().refill_block_cache_level,
+             "Refill block cache after flush or compaction");
+
+DEFINE_int32(refill_filter_and_index_level,
+             rocksdb::BlockBasedTableOptions().refill_filter_and_index_level,
+             "Refill block cache after flush or compaction");
 
 DEFINE_bool(use_data_block_hash_index, false,
             "if use kDataBlockBinaryAndHash "
@@ -3619,6 +3627,10 @@ class Benchmark {
       block_based_options.enable_index_compression =
           FLAGS_enable_index_compression;
       block_based_options.block_align = FLAGS_block_align;
+      block_based_options.refill_block_cache_level =
+          FLAGS_refill_block_cache_level;
+      block_based_options.refill_filter_and_index_level =
+          FLAGS_refill_filter_and_index_level;
       if (FLAGS_use_data_block_hash_index) {
         block_based_options.data_block_index_type =
             rocksdb::BlockBasedTableOptions::kDataBlockBinaryAndHash;

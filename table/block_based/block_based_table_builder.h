@@ -43,7 +43,7 @@ class BlockBasedTableBuilder : public TableBuilder {
       const InternalKeyComparator& internal_comparator,
       const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
           int_tbl_prop_collector_factories,
-      uint32_t column_family_id, WritableFileWriter* file,
+      uint32_t column_family_id, int level, WritableFileWriter* file,
       const CompressionType compression_type,
       const uint64_t sample_for_compression,
       const CompressionOptions& compression_opts, const bool skip_filters,
@@ -108,9 +108,11 @@ class BlockBasedTableBuilder : public TableBuilder {
   // Directly write data to the file.
   void WriteRawBlock(const Slice& data, CompressionType, BlockHandle* handle,
                      bool is_data_block = false);
-  Status InsertBlockInCache(const Slice& block_contents,
-                            const CompressionType type,
-                            const BlockHandle* handle);
+  Status InsertBlockInCacheCompressed(const Slice& block_contents,
+                                      const CompressionType type,
+                                      const BlockHandle* handle);
+  Status InsertBlockInCacheUncompressed(const Slice& block_contents,
+                                        const BlockHandle* handle);
 
   void WriteFilterBlock(MetaIndexBuilder* meta_index_builder);
   void WriteIndexBlock(MetaIndexBuilder* meta_index_builder,
