@@ -103,7 +103,6 @@ void DBImpl::FindObsoleteFiles(JobContext* job_context, bool force,
   job_context->log_number = MinLogNumberToKeep();
   job_context->prev_log_number = versions_->prev_log_number();
 
-  versions_->AddLiveFiles(&job_context->sst_live);
   if (doing_the_full_scan) {
     InfoLogPrefix info_log_prefix(!immutable_db_options_.db_log_dir.empty(),
                                   dbname_);
@@ -234,6 +233,7 @@ void DBImpl::FindObsoleteFiles(JobContext* job_context, bool force,
   job_context->log_recycle_files.assign(log_recycle_files_.begin(),
                                         log_recycle_files_.end());
   if (job_context->HaveSomethingToDelete()) {
+    versions_->ListLiveVersions(&job_context->version_live);
     ++pending_purge_obsolete_files_;
   }
   logs_to_free_.clear();
@@ -303,12 +303,24 @@ void DBImpl::PurgeObsoleteFiles(JobContext& state, bool schedule_only) {
   // FindObsoleteFiles() should've populated this so nonzero
   assert(state.manifest_file_number != 0);
 
-  // Now, convert live list to an unordered map, WITHOUT mutex held;
-  // set is slow.
-  std::unordered_map<uint64_t, const FileDescriptor*> sst_live_map;
-  for (const FileDescriptor& fd : state.sst_live) {
-    sst_live_map[fd.GetNumber()] = &fd;
+  // Read live files from versions.
+  std::unordered_map<uint64_t, FileDescriptor> sst_live_map;
+  for (Version* v : state.version_live) {
+    auto vstorage = v->storage_info();
+    for (int level = 0; level < vstorage->num_levels(); level++) {
+      const std::vector<FileMetaData*>& files = vstorage->LevelFiles(level);
+      for (auto* file : files) {
+        sst_live_map[file->fd.GetNumber()] = file->fd;
+      }
+    }
   }
+  {
+    InstrumentedMutexLock guard_lock(&mutex_);
+    for (Version* v : state.version_live) {
+      v->Unref();
+    }
+  }
+
   std::unordered_set<uint64_t> log_recycle_files_set(
       state.log_recycle_files.begin(), state.log_recycle_files.end());
 

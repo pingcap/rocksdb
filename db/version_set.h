@@ -104,7 +104,10 @@ class VersionStorageInfo {
                      bool _force_consistency_checks);
   ~VersionStorageInfo();
 
-  void Reserve(int level, size_t size) { files_[level].reserve(size); }
+  void Reserve(int level, size_t size) {
+    assert(!finalized_);
+    files_[level].reserve(size);
+  }
 
   void AddFile(int level, FileMetaData* f, Logger* info_log = nullptr);
 
@@ -436,6 +439,7 @@ class VersionStorageInfo {
 
   // List of files per level, files in each level are arranged
   // in increasing order of keys
+  // This container is only mutatable when !finalized_
   std::vector<FileMetaData*>* files_;
 
   // Level that L0 data should be compacted to. All levels < base_level_ should
@@ -983,8 +987,8 @@ class VersionSet {
       const Compaction* c, RangeDelAggregator* range_del_agg,
       const EnvOptions& env_options_compactions);
 
-  // Add all files listed in any live version to *live.
-  void AddLiveFiles(std::vector<FileDescriptor>* live_list);
+  // Ref and list all versions to *live.
+  void ListLiveVersions(std::vector<Version*>* live);
 
   // Return the approximate size of data to be scanned for range [start, end)
   // in levels [start_level, end_level). If end_level == -1 it will search
