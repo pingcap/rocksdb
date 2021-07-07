@@ -1631,6 +1631,8 @@ class DBImpl : public DB {
   // * whenever SetOptions successfully updates options.
   // * whenever a column family is dropped.
   InstrumentedCondVar bg_cv_;
+  InstrumentedCondVar del_file_cv_;
+  bool deleting_file_ = false;
   // Writes are protected by locking both mutex_ and log_write_mutex_, and reads
   // must be under either mutex_ or log_write_mutex_. Since after ::Open,
   // logfile_number_ is currently updated only in write_thread_, it can be read

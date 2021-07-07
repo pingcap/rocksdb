@@ -25,6 +25,18 @@ void InstrumentedMutex::Lock() {
       db_mutex_lock_nanos, stats_code_ == DB_MUTEX_WAIT_MICROS,
       stats_for_report(env_, stats_), stats_code_);
   LockInternal();
+  if (flag_ != nullptr && cond_ != nullptr) {
+    while (*flag_) {
+      cond_->Wait();
+    }
+  }
+}
+
+void InstrumentedMutex::LockWithoutFlagCheck() {
+  PERF_CONDITIONAL_TIMER_FOR_MUTEX_GUARD(
+      db_mutex_lock_nanos, stats_code_ == DB_MUTEX_WAIT_MICROS,
+      stats_for_report(env_, stats_), stats_code_);
+  LockInternal();
 }
 
 void InstrumentedMutex::LockInternal() {

@@ -31,12 +31,19 @@ class InstrumentedMutex {
 
   void Lock();
 
+  void LockWithoutFlagCheck();
+
   void Unlock() {
     mutex_.Unlock();
   }
 
   void AssertHeld() {
     mutex_.AssertHeld();
+  }
+
+  void SetFlag(InstrumentedCondVar* cond, bool* flag) {
+    cond_ = cond;
+    flag_ = flag;
   }
 
  private:
@@ -46,6 +53,8 @@ class InstrumentedMutex {
   Statistics* stats_;
   Env* env_;
   int stats_code_;
+  InstrumentedCondVar* cond_ = nullptr;
+  bool* flag_ = nullptr;
 };
 
 // A wrapper class for port::Mutex that provides additional layer
