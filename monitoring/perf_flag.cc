@@ -2,9 +2,9 @@
 
 namespace rocksdb {
 #ifdef ROCKSDB_SUPPORT_THREAD_LOCAL
-__thread uint8_t perf_flags[FLAGS_LEN];
+__thread uint8_t perf_flags[FLAGS_LEN] = {0};
 #else
-uint8_t perf_flags[FLAGS_LEN];
+uint8_t perf_flags[FLAGS_LEN] = {0};
 #endif
 
 void EnablePerfFlag(uint64_t flag) {
@@ -23,8 +23,11 @@ void DisablePerfFlag(uint64_t flag) {
 }
 
 bool CheckPerfFlag(uint64_t flag) {
+  auto _1 = (uint64_t)0b1 << (flag & (uint64_t)0b111);
+  auto _2 = GET_FLAG(flag);
+  auto _3 = _2 & _1;
   return ((uint64_t)GET_FLAG(flag) & (uint64_t)0b1
-                                         << (flag & (uint64_t)0b111)) == 0;
+                                         << (flag & (uint64_t)0b111)) != 0;
 }
 
 }  // namespace rocksdb
