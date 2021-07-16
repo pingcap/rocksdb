@@ -38,7 +38,7 @@ class NoMergingMergeOp : public MergeOperator {
 
 // Compaction filter that gets stuck when it sees a particular key,
 // then gets unstuck when told to.
-// Always returns Decition::kRemove.
+// Always returns Decision::kRemove.
 class StallingFilter : public CompactionFilter {
  public:
   Decision FilterV2(int /*level*/, const Slice& key, ValueType /*type*/,
@@ -189,7 +189,7 @@ class FakeCompaction : public CompactionIterator::CompactionProxy {
   bool is_allow_ingest_behind = false;
 };
 
-// A simplifed snapshot checker which assumes each snapshot has a global
+// A simplified snapshot checker which assumes each snapshot has a global
 // last visible sequence.
 class TestSnapshotChecker : public SnapshotChecker {
  public:
@@ -282,7 +282,8 @@ class CompactionIteratorTest : public testing::TestWithParam<bool> {
         range_del_agg_.get(), nullptr /* blob_file_builder */,
         true /*allow_data_in_errors*/, std::move(compaction), filter,
         &shutting_down_, /*preserve_deletes_seqnum=*/0,
-        /*manual_compaction_paused=*/nullptr, /*info_log=*/nullptr,
+        /*manual_compaction_paused=*/nullptr,
+        /*manual_compaction_canceled=*/nullptr, /*info_log=*/nullptr,
         full_history_ts_low));
   }
 
@@ -711,7 +712,7 @@ TEST_P(CompactionIteratorTest, ZeroOutSequenceAtBottomLevel) {
   RunTest({test::KeyStr("a", 1, kTypeValue), test::KeyStr("b", 2, kTypeValue)},
           {"v1", "v2"},
           {test::KeyStr("a", 0, kTypeValue), test::KeyStr("b", 2, kTypeValue)},
-          {"v1", "v2"}, kMaxSequenceNumber /*last_commited_seq*/,
+          {"v1", "v2"}, kMaxSequenceNumber /*last_committed_seq*/,
           nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
           true /*bottommost_level*/);
 }
@@ -720,15 +721,14 @@ TEST_P(CompactionIteratorTest, ZeroOutSequenceAtBottomLevel) {
 // permanently.
 TEST_P(CompactionIteratorTest, RemoveDeletionAtBottomLevel) {
   AddSnapshot(1);
-  RunTest({test::KeyStr("a", 1, kTypeDeletion),
-           test::KeyStr("b", 3, kTypeDeletion),
-           test::KeyStr("b", 1, kTypeValue)},
-          {"", "", ""},
-          {test::KeyStr("b", 3, kTypeDeletion),
-           test::KeyStr("b", 0, kTypeValue)},
-          {"", ""},
-          kMaxSequenceNumber /*last_commited_seq*/, nullptr /*merge_operator*/,
-          nullptr /*compaction_filter*/, true /*bottommost_level*/);
+  RunTest(
+      {test::KeyStr("a", 1, kTypeDeletion), test::KeyStr("b", 3, kTypeDeletion),
+       test::KeyStr("b", 1, kTypeValue)},
+      {"", "", ""},
+      {test::KeyStr("b", 3, kTypeDeletion), test::KeyStr("b", 0, kTypeValue)},
+      {"", ""}, kMaxSequenceNumber /*last_committed_seq*/,
+      nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
+      true /*bottommost_level*/);
 }
 
 // In bottommost level, single deletions earlier than earliest snapshot can be
@@ -738,7 +738,7 @@ TEST_P(CompactionIteratorTest, RemoveSingleDeletionAtBottomLevel) {
   RunTest({test::KeyStr("a", 1, kTypeSingleDeletion),
            test::KeyStr("b", 2, kTypeSingleDeletion)},
           {"", ""}, {test::KeyStr("b", 2, kTypeSingleDeletion)}, {""},
-          kMaxSequenceNumber /*last_commited_seq*/, nullptr /*merge_operator*/,
+          kMaxSequenceNumber /*last_committed_seq*/, nullptr /*merge_operator*/,
           nullptr /*compaction_filter*/, true /*bottommost_level*/);
 }
 
@@ -895,7 +895,7 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
           {"v1", "v2", "v3"},
           {test::KeyStr("a", 0, kTypeValue), test::KeyStr("b", 2, kTypeValue),
            test::KeyStr("c", 3, kTypeValue)},
-          {"v1", "v2", "v3"}, kMaxSequenceNumber /*last_commited_seq*/,
+          {"v1", "v2", "v3"}, kMaxSequenceNumber /*last_committed_seq*/,
           nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
           true /*bottommost_level*/);
 }
@@ -906,9 +906,7 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
   RunTest(
       {test::KeyStr("a", 1, kTypeDeletion), test::KeyStr("b", 2, kTypeDeletion),
        test::KeyStr("c", 3, kTypeDeletion)},
-      {"", "", ""},
-      {},
-      {"", ""}, kMaxSequenceNumber /*last_commited_seq*/,
+      {"", "", ""}, {}, {"", ""}, kMaxSequenceNumber /*last_committed_seq*/,
       nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
       true /*bottommost_level*/);
 }
@@ -916,15 +914,14 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
 TEST_F(CompactionIteratorWithSnapshotCheckerTest,
        NotRemoveDeletionIfValuePresentToEarlierSnapshot) {
   AddSnapshot(2,1);
-  RunTest(
-      {test::KeyStr("a", 4, kTypeDeletion), test::KeyStr("a", 1, kTypeValue),
-          test::KeyStr("b", 3, kTypeValue)},
-      {"", "", ""},
-      {test::KeyStr("a", 4, kTypeDeletion), test::KeyStr("a", 0, kTypeValue),
-            test::KeyStr("b", 3, kTypeValue)},
-      {"", "", ""}, kMaxSequenceNumber /*last_commited_seq*/,
-      nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
-      true /*bottommost_level*/);
+  RunTest({test::KeyStr("a", 4, kTypeDeletion),
+           test::KeyStr("a", 1, kTypeValue), test::KeyStr("b", 3, kTypeValue)},
+          {"", "", ""},
+          {test::KeyStr("a", 4, kTypeDeletion),
+           test::KeyStr("a", 0, kTypeValue), test::KeyStr("b", 3, kTypeValue)},
+          {"", "", ""}, kMaxSequenceNumber /*last_committed_seq*/,
+          nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
+          true /*bottommost_level*/);
 }
 
 TEST_F(CompactionIteratorWithSnapshotCheckerTest,
@@ -936,7 +933,7 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
           {"", "", ""},
           {test::KeyStr("b", 2, kTypeSingleDeletion),
            test::KeyStr("c", 3, kTypeSingleDeletion)},
-          {"", ""}, kMaxSequenceNumber /*last_commited_seq*/,
+          {"", ""}, kMaxSequenceNumber /*last_committed_seq*/,
           nullptr /*merge_operator*/, nullptr /*compaction_filter*/,
           true /*bottommost_level*/);
 }
@@ -970,9 +967,24 @@ TEST_F(CompactionIteratorWithSnapshotCheckerTest,
           2 /*earliest_write_conflict_snapshot*/);
 }
 
+// Same as above but with a blob index. In addition to the value getting
+// trimmed, the type of the KV is changed to kTypeValue.
+TEST_F(CompactionIteratorWithSnapshotCheckerTest,
+       KeepSingleDeletionForWriteConflictChecking_BlobIndex) {
+  AddSnapshot(2, 0);
+  RunTest({test::KeyStr("a", 2, kTypeSingleDeletion),
+           test::KeyStr("a", 1, kTypeBlobIndex)},
+          {"", "fake_blob_index"},
+          {test::KeyStr("a", 2, kTypeSingleDeletion),
+           test::KeyStr("a", 1, kTypeValue)},
+          {"", ""}, 2 /*last_committed_seq*/, nullptr /*merge_operator*/,
+          nullptr /*compaction_filter*/, false /*bottommost_level*/,
+          2 /*earliest_write_conflict_snapshot*/);
+}
+
 // Compaction filter should keep uncommitted key as-is, and
-//   * Convert the latest velue to deletion, and/or
-//   * if latest value is a merge, apply filter to all suequent merges.
+//   * Convert the latest value to deletion, and/or
+//   * if latest value is a merge, apply filter to all subsequent merges.
 
 TEST_F(CompactionIteratorWithSnapshotCheckerTest, CompactionFilter_Value) {
   std::unique_ptr<CompactionFilter> compaction_filter(

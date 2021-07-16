@@ -17,12 +17,15 @@
 #pragma once
 
 #include <stdint.h>
+
 #include <cstdarg>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "rocksdb/functor_wrapper.h"
 #include "rocksdb/status.h"
 #include "rocksdb/thread_status.h"
 
@@ -35,7 +38,7 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define ROCKSDB_PRINTF_FORMAT_ATTR(format_param, dots_param) \
-    __attribute__((__format__(__printf__, format_param, dots_param)))
+  __attribute__((__format__(__printf__, format_param, dots_param)))
 #else
 #define ROCKSDB_PRINTF_FORMAT_ATTR(format_param, dots_param)
 #endif
@@ -48,6 +51,7 @@ class Logger;
 class RandomAccessFile;
 class SequentialFile;
 class Slice;
+struct DataVerificationInfo;
 class WritableFile;
 class RandomRWFile;
 class MemoryMappedFileBuffer;
@@ -59,6 +63,8 @@ class RateLimiter;
 class ThreadStatusUpdater;
 struct ThreadStatus;
 class FileSystem;
+class SystemClock;
+struct ConfigOptions;
 
 const size_t kDefaultPageSize = 4 * 1024;
 
@@ -150,8 +156,11 @@ class Env {
   };
 
   Env();
-  // Construct an Env with a separate FileSystem implementation
-  Env(std::shared_ptr<FileSystem> fs);
+  // Construct an Env with a separate FileSystem and/or SystemClock
+  // implementation
+  explicit Env(const std::shared_ptr<FileSystem>& fs);
+  Env(const std::shared_ptr<FileSystem>& fs,
+      const std::shared_ptr<SystemClock>& clock);
   // No copying allowed
   Env(const Env&) = delete;
   void operator=(const Env&) = delete;
@@ -161,11 +170,43 @@ class Env {
   static const char* Type() { return "Environment"; }
 
   // Loads the environment specified by the input value into the result
+  // The CreateFromString alternative should be used; this method may be
+  // deprecated in a future release.
   static Status LoadEnv(const std::string& value, Env** result);
 
   // Loads the environment specified by the input value into the result
+  // The CreateFromString alternative should be used; this method may be
+  // deprecated in a future release.
   static Status LoadEnv(const std::string& value, Env** result,
                         std::shared_ptr<Env>* guard);
+
+  // Loads the environment specified by the input value into the result
+  // @see Customizable for a more detailed description of the parameters and
+  // return codes
+  //
+  // @param config_options Controls how the environment is loaded.
+  // @param value the name and associated properties for the environment.
+  // @param result On success, the environment that was loaded.
+  // @param guard If specified and the loaded environment is not static,
+  //      this value will contain the loaded environment (guard.get() ==
+  //      result).
+  // @return OK If the environment was successfully loaded (and optionally
+  // prepared)
+  // @return not-OK if the load failed.
+  static Status CreateFromString(const ConfigOptions& config_options,
+                                 const std::string& value, Env** result);
+  static Status CreateFromString(const ConfigOptions& config_options,
+                                 const std::string& value, Env** result,
+                                 std::shared_ptr<Env>* guard);
+
+  // Loads the environment specified by the env and fs uri.
+  // If both are specified, an error is returned.
+  // Otherwise, the environment is created by loading (via CreateFromString)
+  // the appropriate env/fs from the corresponding values.
+  static Status CreateFromUri(const ConfigOptions& options,
+                              const std::string& env_uri,
+                              const std::string& fs_uri, Env** result,
+                              std::shared_ptr<Env>* guard);
 
   // Return a default environment suitable for the current operating
   // system.  Sophisticated users may wish to provide their own Env
@@ -417,6 +458,21 @@ class Env {
   // When "function(arg)" returns, the thread will be destroyed.
   virtual void StartThread(void (*function)(void* arg), void* arg) = 0;
 
+  // Start a new thread, invoking "function(args...)" within the new thread.
+  // When "function(args...)" returns, the thread will be destroyed.
+  template <typename FunctionT, typename... Args>
+  void StartThreadTyped(FunctionT function, Args&&... args) {
+    using FWType = FunctorWrapper<Args...>;
+    StartThread(
+        [](void* arg) {
+          auto* functor = static_cast<FWType*>(arg);
+          functor->invoke();
+          delete functor;
+        },
+        new FWType(std::function<void(Args...)>(function),
+                   std::forward<Args>(args)...));
+  }
+
   // Wait for all threads started by StartThread to terminate.
   virtual void WaitForJoin() {}
 
@@ -432,7 +488,7 @@ class Env {
   virtual Status GetTestDirectory(std::string* path) = 0;
 
   // Create and returns a default logger (an instance of EnvLogger) for storing
-  // informational messages. Derived classes can overide to provide custom
+  // informational messages. Derived classes can override to provide custom
   // logger.
   virtual Status NewLogger(const std::string& fname,
                            std::shared_ptr<Logger>* result);
@@ -541,6 +597,13 @@ class Env {
       const EnvOptions& env_options,
       const ImmutableDBOptions& db_options) const;
 
+  // OptimizeForBlobFileRead will create a new EnvOptions object that
+  // is a copy of the EnvOptions in the parameters, but is optimized for reading
+  // blob files.
+  virtual EnvOptions OptimizeForBlobFileRead(
+      const EnvOptions& env_options,
+      const ImmutableDBOptions& db_options) const;
+
   // Returns the status of all threads that belong to the current Env.
   virtual Status GetThreadList(std::vector<ThreadStatus>* /*thread_list*/) {
     return Status::NotSupported("Env::GetThreadList() not supported.");
@@ -576,6 +639,10 @@ class Env {
   // could be a fully implemented one, or a wrapper class around the Env
   const std::shared_ptr<FileSystem>& GetFileSystem() const;
 
+  // Get the SystemClock implementation this Env was constructed with. It
+  // could be a fully implemented one, or a wrapper class around the Env
+  const std::shared_ptr<SystemClock>& GetSystemClock() const;
+
   // If you're adding methods here, remember to add them to EnvWrapper too.
 
  protected:
@@ -585,6 +652,9 @@ class Env {
 
   // Pointer to the underlying FileSystem implementation
   std::shared_ptr<FileSystem> file_system_;
+
+  // Pointer to the underlying SystemClock implementation
+  std::shared_ptr<SystemClock> system_clock_;
 
  private:
   static const size_t kMaxHostNameLen = 256;
@@ -607,6 +677,10 @@ class SequentialFile {
   // May set "*result" to point at data in "scratch[0..n-1]", so
   // "scratch[0..n-1]" must be live when "*result" is used.
   // If an error was encountered, returns a non-OK status.
+  //
+  // After call, result->size() < n only if end of file has been
+  // reached (or non-OK status). Read might fail if called again after
+  // first result->size() < n.
   //
   // REQUIRES: External synchronization
   virtual Status Read(size_t n, Slice* result, char* scratch) = 0;
@@ -653,7 +727,8 @@ struct ReadRequest {
   // File offset in bytes
   uint64_t offset;
 
-  // Length to read in bytes
+  // Length to read in bytes. `result` only returns fewer bytes if end of file
+  // is hit (or `status` is not OK).
   size_t len;
 
   // A buffer that MultiRead()  can optionally place data in. It can
@@ -681,6 +756,10 @@ class RandomAccessFile {
   // "scratch[0..n-1]", so "scratch[0..n-1]" must be live when
   // "*result" is used.  If an error was encountered, returns a non-OK
   // status.
+  //
+  // After call, result->size() < n only if end of file has been
+  // reached (or non-OK status). Read might fail if called again after
+  // first result->size() < n.
   //
   // Safe for concurrent use by multiple threads.
   // If Direct I/O enabled, offset, n, and scratch should be aligned properly.
@@ -777,9 +856,21 @@ class WritableFile {
   virtual ~WritableFile();
 
   // Append data to the end of the file
-  // Note: A WriteabelFile object must support either Append or
+  // Note: A WriteableFile object must support either Append or
   // PositionedAppend, so the users cannot mix the two.
   virtual Status Append(const Slice& data) = 0;
+
+  // Append data with verification information.
+  // Note that this API change is experimental and it might be changed in
+  // the future. Currently, RocksDB only generates crc32c based checksum for
+  // the file writes when the checksum handoff option is set.
+  // Expected behavior: if currently ChecksumType::kCRC32C is not supported by
+  // WritableFile, the information in DataVerificationInfo can be ignored
+  // (i.e. does not perform checksum verification).
+  virtual Status Append(const Slice& data,
+                        const DataVerificationInfo& /* verification_info */) {
+    return Append(data);
+  }
 
   // PositionedAppend data to the specified offset. The new EOF after append
   // must be larger than the previous EOF. This is to be used when writes are
@@ -805,6 +896,19 @@ class WritableFile {
                                   uint64_t /* offset */) {
     return Status::NotSupported(
         "WritableFile::PositionedAppend() not supported.");
+  }
+
+  // PositionedAppend data with verification information.
+  // Note that this API change is experimental and it might be changed in
+  // the future. Currently, RocksDB only generates crc32c based checksum for
+  // the file writes when the checksum handoff option is set.
+  // Expected behavior: if currently ChecksumType::kCRC32C is not supported by
+  // WritableFile, the information in DataVerificationInfo can be ignored
+  // (i.e. does not perform checksum verification).
+  virtual Status PositionedAppend(
+      const Slice& /* data */, uint64_t /* offset */,
+      const DataVerificationInfo& /* verification_info */) {
+    return Status::NotSupported("PositionedAppend");
   }
 
   // Truncate is necessary to trim the file to the correct size
@@ -966,6 +1070,11 @@ class RandomRWFile {
 
   // Read up to `n` bytes starting from offset `offset` and store them in
   // result, provided `scratch` size should be at least `n`.
+  //
+  // After call, result->size() < n only if end of file has been
+  // reached (or non-OK status). Read might fail if called again after
+  // first result->size() < n.
+  //
   // Returns Status::OK() on success.
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
                       char* scratch) const = 0;
@@ -1444,6 +1553,11 @@ class EnvWrapper : public Env {
       const ImmutableDBOptions& db_options) const override {
     return target_->OptimizeForCompactionTableRead(env_options, db_options);
   }
+  EnvOptions OptimizeForBlobFileRead(
+      const EnvOptions& env_options,
+      const ImmutableDBOptions& db_options) const override {
+    return target_->OptimizeForBlobFileRead(env_options, db_options);
+  }
   Status GetFreeSpace(const std::string& path, uint64_t* diskfree) override {
     return target_->GetFreeSpace(path, diskfree);
   }
@@ -1515,8 +1629,17 @@ class WritableFileWrapper : public WritableFile {
   explicit WritableFileWrapper(WritableFile* t) : target_(t) {}
 
   Status Append(const Slice& data) override { return target_->Append(data); }
+  Status Append(const Slice& data,
+                const DataVerificationInfo& verification_info) override {
+    return target_->Append(data, verification_info);
+  }
   Status PositionedAppend(const Slice& data, uint64_t offset) override {
     return target_->PositionedAppend(data, offset);
+  }
+  Status PositionedAppend(
+      const Slice& data, uint64_t offset,
+      const DataVerificationInfo& verification_info) override {
+    return target_->PositionedAppend(data, offset, verification_info);
   }
   Status Truncate(uint64_t size) override { return target_->Truncate(size); }
   Status Close() override { return target_->Close(); }

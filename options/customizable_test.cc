@@ -90,7 +90,7 @@ static std::unordered_map<std::string, OptionTypeInfo> a_option_info = {
 #ifndef ROCKSDB_LITE
     {"int",
      {offsetof(struct AOptions, i), OptionType::kInt,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
+      OptionVerificationType::kNormal, OptionTypeFlags::kMutable}},
     {"bool",
      {offsetof(struct AOptions, b), OptionType::kBoolean,
       OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
@@ -98,8 +98,9 @@ static std::unordered_map<std::string, OptionTypeInfo> a_option_info = {
 };
 class ACustomizable : public TestCustomizable {
  public:
-  ACustomizable(const std::string& id) : TestCustomizable("A"), id_(id) {
-    ConfigurableHelper::RegisterOptions(*this, "A", &opts_, &a_option_info);
+  explicit ACustomizable(const std::string& id)
+      : TestCustomizable("A"), id_(id) {
+    RegisterOptions("A", &opts_, &a_option_info);
   }
   std::string GetId() const override { return id_; }
   static const char* kClassName() { return "A"; }
@@ -131,7 +132,7 @@ static std::unordered_map<std::string, OptionTypeInfo> b_option_info = {
 #ifndef ROCKSDB_LITE
     {"string",
      {offsetof(struct BOptions, s), OptionType::kString,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
+      OptionVerificationType::kNormal, OptionTypeFlags::kMutable}},
     {"bool",
      {offsetof(struct BOptions, b), OptionType::kBoolean,
       OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
@@ -141,8 +142,8 @@ static std::unordered_map<std::string, OptionTypeInfo> b_option_info = {
 class BCustomizable : public TestCustomizable {
  private:
  public:
-  BCustomizable(const std::string& name) : TestCustomizable(name) {
-    ConfigurableHelper::RegisterOptions(*this, name, &opts_, &b_option_info);
+  explicit BCustomizable(const std::string& name) : TestCustomizable(name) {
+    RegisterOptions(name, &opts_, &b_option_info);
   }
   static const char* kClassName() { return "B"; }
 
@@ -217,6 +218,7 @@ const FactoryFunc<TestCustomizable>& s_func =
 
 struct SimpleOptions {
   bool b = true;
+  bool is_mutable = true;
   std::unique_ptr<TestCustomizable> cu;
   std::shared_ptr<TestCustomizable> cs;
   TestCustomizable* cp = nullptr;
@@ -245,14 +247,23 @@ class SimpleConfigurable : public Configurable {
 
  public:
   SimpleConfigurable() {
-    ConfigurableHelper::RegisterOptions(*this, "simple", &simple_,
-                                        &simple_option_info);
+    RegisterOptions("simple", &simple_, &simple_option_info);
   }
 
-  SimpleConfigurable(
+  explicit SimpleConfigurable(
       const std::unordered_map<std::string, OptionTypeInfo>* map) {
-    ConfigurableHelper::RegisterOptions(*this, "simple", &simple_, map);
+    RegisterOptions("simple", &simple_, map);
   }
+
+  bool IsPrepared() const override {
+    if (simple_.is_mutable) {
+      return false;
+    } else {
+      return Configurable::IsPrepared();
+    }
+  }
+
+ private:
 };
 
 class CustomizableTest : public testing::Test {
@@ -494,12 +505,75 @@ static std::unordered_map<std::string, OptionTypeInfo> inner_option_info = {
 #endif  // ROCKSDB_LITE
 };
 
+class InnerCustomizable : public Customizable {
+ public:
+  explicit InnerCustomizable(const std::shared_ptr<Customizable>& w)
+      : inner_(w) {}
+  static const char* kClassName() { return "Inner"; }
+  bool IsInstanceOf(const std::string& name) const override {
+    if (name == kClassName()) {
+      return true;
+    } else {
+      return Customizable::IsInstanceOf(name);
+    }
+  }
+
+ protected:
+  const Customizable* Inner() const override { return inner_.get(); }
+
+ private:
+  std::shared_ptr<Customizable> inner_;
+};
+
+class WrappedCustomizable1 : public InnerCustomizable {
+ public:
+  explicit WrappedCustomizable1(const std::shared_ptr<Customizable>& w)
+      : InnerCustomizable(w) {}
+  const char* Name() const override { return kClassName(); }
+  static const char* kClassName() { return "Wrapped1"; }
+};
+
+class WrappedCustomizable2 : public InnerCustomizable {
+ public:
+  explicit WrappedCustomizable2(const std::shared_ptr<Customizable>& w)
+      : InnerCustomizable(w) {}
+  const char* Name() const override { return kClassName(); }
+  static const char* kClassName() { return "Wrapped2"; }
+};
+
+TEST_F(CustomizableTest, WrappedInnerTest) {
+  std::shared_ptr<TestCustomizable> ac =
+      std::make_shared<TestCustomizable>("A");
+
+  ASSERT_TRUE(ac->IsInstanceOf("A"));
+  ASSERT_TRUE(ac->IsInstanceOf("TestCustomizable"));
+  ASSERT_EQ(ac->CheckedCast<TestCustomizable>(), ac.get());
+  ASSERT_EQ(ac->CheckedCast<InnerCustomizable>(), nullptr);
+  ASSERT_EQ(ac->CheckedCast<WrappedCustomizable1>(), nullptr);
+  ASSERT_EQ(ac->CheckedCast<WrappedCustomizable2>(), nullptr);
+  std::shared_ptr<Customizable> wc1 =
+      std::make_shared<WrappedCustomizable1>(ac);
+
+  ASSERT_TRUE(wc1->IsInstanceOf(WrappedCustomizable1::kClassName()));
+  ASSERT_EQ(wc1->CheckedCast<WrappedCustomizable1>(), wc1.get());
+  ASSERT_EQ(wc1->CheckedCast<WrappedCustomizable2>(), nullptr);
+  ASSERT_EQ(wc1->CheckedCast<InnerCustomizable>(), wc1.get());
+  ASSERT_EQ(wc1->CheckedCast<TestCustomizable>(), ac.get());
+
+  std::shared_ptr<Customizable> wc2 =
+      std::make_shared<WrappedCustomizable2>(wc1);
+  ASSERT_TRUE(wc2->IsInstanceOf(WrappedCustomizable2::kClassName()));
+  ASSERT_EQ(wc2->CheckedCast<WrappedCustomizable2>(), wc2.get());
+  ASSERT_EQ(wc2->CheckedCast<WrappedCustomizable1>(), wc1.get());
+  ASSERT_EQ(wc2->CheckedCast<InnerCustomizable>(), wc2.get());
+  ASSERT_EQ(wc2->CheckedCast<TestCustomizable>(), ac.get());
+}
+
 class ShallowCustomizable : public Customizable {
  public:
   ShallowCustomizable() {
     inner_ = std::make_shared<ACustomizable>("a");
-    ConfigurableHelper::RegisterOptions(*this, "inner", &inner_,
-                                        &inner_option_info);
+    RegisterOptions("inner", &inner_, &inner_option_info);
   };
   static const char* kClassName() { return "shallow"; }
   const char* Name() const override { return kClassName(); }
@@ -536,7 +610,7 @@ TEST_F(CustomizableTest, NewCustomizableTest) {
   ASSERT_OK(base->ConfigureFromString(config_options_,
                                       "unique={id=A_2;int=1;bool=false}"));
   ASSERT_EQ(A_count, 3);  // Created another A
-  ASSERT_OK(base->ConfigureFromString(config_options_, "unique="));
+  ASSERT_OK(base->ConfigureFromString(config_options_, "unique.id="));
   ASSERT_EQ(simple->cu, nullptr);
   ASSERT_EQ(A_count, 3);
 }
@@ -600,9 +674,9 @@ TEST_F(CustomizableTest, FactoryFunctionTest) {
   ASSERT_NE(pointer, nullptr);
   delete pointer;
   pointer = nullptr;
-  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "", &shared));
-  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "", &unique));
-  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "", &pointer));
+  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "id=", &shared));
+  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "id=", &unique));
+  ASSERT_OK(TestCustomizable::CreateFromString(ignore, "id=", &pointer));
   ASSERT_EQ(shared.get(), nullptr);
   ASSERT_EQ(unique.get(), nullptr);
   ASSERT_EQ(pointer, nullptr);
@@ -613,7 +687,173 @@ TEST_F(CustomizableTest, FactoryFunctionTest) {
   ASSERT_EQ(pointer, nullptr);
 }
 
+TEST_F(CustomizableTest, MutableOptionsTest) {
+  static std::unordered_map<std::string, OptionTypeInfo> mutable_option_info = {
+      {"mutable",
+       OptionTypeInfo::AsCustomSharedPtr<TestCustomizable>(
+           0, OptionVerificationType::kNormal, OptionTypeFlags::kMutable)}};
+  static std::unordered_map<std::string, OptionTypeInfo> immutable_option_info =
+      {{"immutable",
+        OptionTypeInfo::AsCustomSharedPtr<TestCustomizable>(
+            0, OptionVerificationType::kNormal, OptionTypeFlags::kNone)}};
+
+  class MutableCustomizable : public Customizable {
+   private:
+    std::shared_ptr<TestCustomizable> mutable_;
+    std::shared_ptr<TestCustomizable> immutable_;
+
+   public:
+    MutableCustomizable() {
+      RegisterOptions("mutable", &mutable_, &mutable_option_info);
+      RegisterOptions("immutable", &immutable_, &immutable_option_info);
+    }
+    const char* Name() const override { return "MutableCustomizable"; }
+  };
+  MutableCustomizable mc;
+
+  ConfigOptions options = config_options_;
+  ASSERT_FALSE(mc.IsPrepared());
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "{id=B;}"));
+  ASSERT_OK(mc.ConfigureOption(options, "immutable", "{id=A; int=10}"));
+  auto* mm = mc.GetOptions<std::shared_ptr<TestCustomizable>>("mutable");
+  auto* im = mc.GetOptions<std::shared_ptr<TestCustomizable>>("immutable");
+  ASSERT_NE(mm, nullptr);
+  ASSERT_NE(mm->get(), nullptr);
+  ASSERT_NE(im, nullptr);
+  ASSERT_NE(im->get(), nullptr);
+
+  // Now only deal with mutable options
+  options.mutable_options_only = true;
+
+  // Setting nested immutable customizable options fails
+  ASSERT_NOK(mc.ConfigureOption(options, "immutable", "{id=B;}"));
+  ASSERT_NOK(mc.ConfigureOption(options, "immutable.id", "B"));
+  ASSERT_NOK(mc.ConfigureOption(options, "immutable.bool", "true"));
+  ASSERT_NOK(mc.ConfigureOption(options, "immutable", "bool=true"));
+  ASSERT_NOK(mc.ConfigureOption(options, "immutable", "{int=11;bool=true}"));
+  auto* im_a = im->get()->GetOptions<AOptions>("A");
+  ASSERT_NE(im_a, nullptr);
+  ASSERT_EQ(im_a->i, 10);
+  ASSERT_EQ(im_a->b, false);
+
+  // Setting nested mutable customizable options succeeds but the object did not
+  // change
+  ASSERT_OK(mc.ConfigureOption(options, "immutable.int", "11"));
+  ASSERT_EQ(im_a->i, 11);
+  ASSERT_EQ(im_a, im->get()->GetOptions<AOptions>("A"));
+
+  // The mutable configurable itself can be changed
+  ASSERT_OK(mc.ConfigureOption(options, "mutable.id", "A"));
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "A"));
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "{id=A}"));
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "{bool=true}"));
+
+  // The Nested options in the mutable object can be changed
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "{bool=true}"));
+  auto* mm_a = mm->get()->GetOptions<AOptions>("A");
+  ASSERT_EQ(mm_a->b, true);
+  ASSERT_OK(mc.ConfigureOption(options, "mutable", "{int=11;bool=false}"));
+  mm_a = mm->get()->GetOptions<AOptions>("A");
+  ASSERT_EQ(mm_a->i, 11);
+  ASSERT_EQ(mm_a->b, false);
+}
 #endif  // !ROCKSDB_LITE
+
+#ifndef ROCKSDB_LITE
+// This method loads existing test classes into the ObjectRegistry
+static int RegisterTestObjects(ObjectLibrary& library,
+                               const std::string& /*arg*/) {
+  size_t num_types;
+  library.Register<TableFactory>(
+      "MockTable",
+      [](const std::string& /*uri*/, std::unique_ptr<TableFactory>* guard,
+         std::string* /* errmsg */) {
+        guard->reset(new mock::MockTableFactory());
+        return guard->get();
+      });
+  library.Register<const Comparator>(
+      test::SimpleSuffixReverseComparator::kClassName(),
+      [](const std::string& /*uri*/,
+         std::unique_ptr<const Comparator>* /*guard*/,
+         std::string* /* errmsg */) {
+        static test::SimpleSuffixReverseComparator ssrc;
+        return &ssrc;
+      });
+
+  return static_cast<int>(library.GetFactoryCount(&num_types));
+}
+
+static int RegisterLocalObjects(ObjectLibrary& library,
+                                const std::string& /*arg*/) {
+  size_t num_types;
+  // Load any locally defined objects here
+  return static_cast<int>(library.GetFactoryCount(&num_types));
+}
+#endif  // !ROCKSDB_LITE
+
+class LoadCustomizableTest : public testing::Test {
+ public:
+  LoadCustomizableTest() { config_options_.ignore_unsupported_options = false; }
+  bool RegisterTests(const std::string& arg) {
+#ifndef ROCKSDB_LITE
+    config_options_.registry->AddLibrary("custom-tests", RegisterTestObjects,
+                                         arg);
+    config_options_.registry->AddLibrary("local-tests", RegisterLocalObjects,
+                                         arg);
+    return true;
+#else
+    (void)arg;
+    return false;
+#endif  // !ROCKSDB_LITE
+  }
+
+ protected:
+  DBOptions db_opts_;
+  ColumnFamilyOptions cf_opts_;
+  ConfigOptions config_options_;
+};
+
+TEST_F(LoadCustomizableTest, LoadTableFactoryTest) {
+  std::shared_ptr<TableFactory> factory;
+  ASSERT_NOK(
+      TableFactory::CreateFromString(config_options_, "MockTable", &factory));
+  ASSERT_OK(TableFactory::CreateFromString(
+      config_options_, TableFactory::kBlockBasedTableName(), &factory));
+  ASSERT_NE(factory, nullptr);
+  ASSERT_STREQ(factory->Name(), TableFactory::kBlockBasedTableName());
+
+  if (RegisterTests("Test")) {
+    ASSERT_OK(
+        TableFactory::CreateFromString(config_options_, "MockTable", &factory));
+    ASSERT_NE(factory, nullptr);
+    ASSERT_STREQ(factory->Name(), "MockTable");
+  }
+}
+
+TEST_F(LoadCustomizableTest, LoadComparatorTest) {
+  const Comparator* bytewise = BytewiseComparator();
+  const Comparator* reverse = ReverseBytewiseComparator();
+
+  const Comparator* result = nullptr;
+  ASSERT_NOK(Comparator::CreateFromString(
+      config_options_, test::SimpleSuffixReverseComparator::kClassName(),
+      &result));
+  ASSERT_OK(
+      Comparator::CreateFromString(config_options_, bytewise->Name(), &result));
+  ASSERT_EQ(result, bytewise);
+  ASSERT_OK(
+      Comparator::CreateFromString(config_options_, reverse->Name(), &result));
+  ASSERT_EQ(result, reverse);
+
+  if (RegisterTests("Test")) {
+    ASSERT_OK(Comparator::CreateFromString(
+        config_options_, test::SimpleSuffixReverseComparator::kClassName(),
+        &result));
+    ASSERT_NE(result, nullptr);
+    ASSERT_STREQ(result->Name(),
+                 test::SimpleSuffixReverseComparator::kClassName());
+  }
+}
 
 }  // namespace ROCKSDB_NAMESPACE
 int main(int argc, char** argv) {

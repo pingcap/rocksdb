@@ -26,13 +26,13 @@
 #include "port/win/env_win.h"
 #include "port/win/io_win.h"
 #include "rocksdb/env.h"
+#include "rocksdb/system_clock.h"
 
 namespace ROCKSDB_NAMESPACE {
 
 namespace port {
 
-WinLogger::WinLogger(uint64_t (*gettid)(),
-                     const std::shared_ptr<WinClock>& clock, HANDLE file,
+WinLogger::WinLogger(uint64_t (*gettid)(), SystemClock* clock, HANDLE file,
                      const InfoLogLevel log_level)
     : Logger(log_level),
       file_(file),
@@ -55,7 +55,7 @@ void WinLogger::DebugWriter(const char* str, int len) {
   }
 }
 
-WinLogger::~WinLogger() { CloseInternal(); }
+WinLogger::~WinLogger() { CloseInternal().PermitUncheckedError(); }
 
 Status WinLogger::CloseImpl() {
   return CloseInternal();

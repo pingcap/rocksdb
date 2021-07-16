@@ -40,16 +40,25 @@ Status ExternalSstFileIngestionJob::Prepare(
     if (!status.ok()) {
       return status;
     }
-    files_to_ingest_.push_back(file_to_ingest);
-  }
 
-  for (const IngestedFileInfo& f : files_to_ingest_) {
-    if (f.cf_id !=
+    if (file_to_ingest.cf_id !=
             TablePropertiesCollectorFactory::Context::kUnknownColumnFamily &&
-        f.cf_id != cfd_->GetID()) {
+        file_to_ingest.cf_id != cfd_->GetID()) {
       return Status::InvalidArgument(
           "External file column family id don't match");
     }
+
+    if (file_to_ingest.num_entries == 0 &&
+        file_to_ingest.num_range_deletions == 0) {
+      return Status::InvalidArgument("File contain no entries");
+    }
+
+    if (!file_to_ingest.smallest_internal_key.Valid() ||
+        !file_to_ingest.largest_internal_key.Valid()) {
+      return Status::Corruption("Generated table have corrupted keys");
+    }
+
+    files_to_ingest_.emplace_back(std::move(file_to_ingest));
   }
 
   const Comparator* ucmp = cfd_->internal_comparator().user_comparator();
@@ -83,16 +92,6 @@ Status ExternalSstFileIngestionJob::Prepare(
     return Status::NotSupported("Files have overlapping ranges");
   }
 
-  for (IngestedFileInfo& f : files_to_ingest_) {
-    if (f.num_entries == 0 && f.num_range_deletions == 0) {
-      return Status::InvalidArgument("File contain no entries");
-    }
-
-    if (!f.smallest_internal_key.Valid() || !f.largest_internal_key.Valid()) {
-      return Status::Corruption("Generated table have corrupted keys");
-    }
-  }
-
   // Copy/Move external files into DB
   std::unordered_set<size_t> ingestion_path_ids;
   for (IngestedFileInfo& f : files_to_ingest_) {
@@ -110,17 +109,26 @@ Status ExternalSstFileIngestionJob::Prepare(
         // directory before ingest the file. For integrity of RocksDB we need
         // to sync the file.
         std::unique_ptr<FSWritableFile> file_to_sync;
-        status = fs_->ReopenWritableFile(path_inside_db, env_options_,
-                                         &file_to_sync, nullptr);
-        if (status.ok()) {
-          TEST_SYNC_POINT(
-              "ExternalSstFileIngestionJob::BeforeSyncIngestedFile");
-          status = SyncIngestedFile(file_to_sync.get());
-          TEST_SYNC_POINT("ExternalSstFileIngestionJob::AfterSyncIngestedFile");
-          if (!status.ok()) {
-            ROCKS_LOG_WARN(db_options_.info_log,
-                           "Failed to sync ingested file %s: %s",
-                           path_inside_db.c_str(), status.ToString().c_str());
+        Status s = fs_->ReopenWritableFile(path_inside_db, env_options_,
+                                           &file_to_sync, nullptr);
+        TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Prepare:Reopen",
+                                 &s);
+        // Some file systems (especially remote/distributed) don't support
+        // reopening a file for writing and don't require reopening and
+        // syncing the file. Ignore the NotSupported error in that case.
+        if (!s.IsNotSupported()) {
+          status = s;
+          if (status.ok()) {
+            TEST_SYNC_POINT(
+                "ExternalSstFileIngestionJob::BeforeSyncIngestedFile");
+            status = SyncIngestedFile(file_to_sync.get());
+            TEST_SYNC_POINT(
+                "ExternalSstFileIngestionJob::AfterSyncIngestedFile");
+            if (!status.ok()) {
+              ROCKS_LOG_WARN(db_options_.info_log,
+                             "Failed to sync ingested file %s: %s",
+                             path_inside_db.c_str(), status.ToString().c_str());
+            }
           }
         }
       } else if (status.IsNotSupported() &&
@@ -293,12 +301,13 @@ Status ExternalSstFileIngestionJob::Prepare(
 
   // TODO: The following is duplicated with Cleanup().
   if (!status.ok()) {
+    IOOptions io_opts;
     // We failed, remove all files that we copied into the db
     for (IngestedFileInfo& f : files_to_ingest_) {
       if (f.internal_file_path.empty()) {
         continue;
       }
-      Status s = env_->DeleteFile(f.internal_file_path);
+      Status s = fs_->DeleteFile(f.internal_file_path, io_opts, nullptr);
       if (!s.ok()) {
         ROCKS_LOG_WARN(db_options_.info_log,
                        "AddFile() clean up for file %s failed : %s",
@@ -367,9 +376,32 @@ Status ExternalSstFileIngestionJob::Run() {
           super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
           last_seqno, &f, &assigned_seqno);
     }
+
+    // Modify the smallest/largest internal key to include the sequence number
+    // that we just learned. Only overwrite sequence number zero. There could
+    // be a nonzero sequence number already to indicate a range tombstone's
+    // exclusive endpoint.
+    ParsedInternalKey smallest_parsed, largest_parsed;
+    if (status.ok()) {
+      status = ParseInternalKey(*f.smallest_internal_key.rep(),
+                                &smallest_parsed, false /* log_err_key */);
+    }
+    if (status.ok()) {
+      status = ParseInternalKey(*f.largest_internal_key.rep(), &largest_parsed,
+                                false /* log_err_key */);
+    }
     if (!status.ok()) {
       return status;
     }
+    if (smallest_parsed.sequence == 0) {
+      UpdateInternalKey(f.smallest_internal_key.rep(), assigned_seqno,
+                        smallest_parsed.type);
+    }
+    if (largest_parsed.sequence == 0) {
+      UpdateInternalKey(f.largest_internal_key.rep(), assigned_seqno,
+                        largest_parsed.type);
+    }
+
     status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
     TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
                              &assigned_seqno);
@@ -392,7 +424,7 @@ Status ExternalSstFileIngestionJob::Run() {
     int64_t temp_current_time = 0;
     uint64_t current_time = kUnknownFileCreationTime;
     uint64_t oldest_ancester_time = kUnknownOldestAncesterTime;
-    if (env_->GetCurrentTime(&temp_current_time).ok()) {
+    if (clock_->GetCurrentTime(&temp_current_time).ok()) {
       current_time = oldest_ancester_time =
           static_cast<uint64_t>(temp_current_time);
     }
@@ -410,7 +442,7 @@ void ExternalSstFileIngestionJob::UpdateStats() {
   // Update internal stats for new ingested files
   uint64_t total_keys = 0;
   uint64_t total_l0_files = 0;
-  uint64_t total_time = env_->NowMicros() - job_start_time_;
+  uint64_t total_time = clock_->NowMicros() - job_start_time_;
 
   EventLoggerStream stream = event_logger_->Log();
   stream << "event"
@@ -466,6 +498,7 @@ void ExternalSstFileIngestionJob::UpdateStats() {
 }
 
 void ExternalSstFileIngestionJob::Cleanup(const Status& status) {
+  IOOptions io_opts;
   if (!status.ok()) {
     // We failed to add the files to the database
     // remove all the files we copied
@@ -473,7 +506,7 @@ void ExternalSstFileIngestionJob::Cleanup(const Status& status) {
       if (f.internal_file_path.empty()) {
         continue;
       }
-      Status s = env_->DeleteFile(f.internal_file_path);
+      Status s = fs_->DeleteFile(f.internal_file_path, io_opts, nullptr);
       if (!s.ok()) {
         ROCKS_LOG_WARN(db_options_.info_log,
                        "AddFile() clean up for file %s failed : %s",
@@ -485,7 +518,7 @@ void ExternalSstFileIngestionJob::Cleanup(const Status& status) {
   } else if (status.ok() && ingestion_options_.move_files) {
     // The files were moved and added successfully, remove original file links
     for (IngestedFileInfo& f : files_to_ingest_) {
-      Status s = env_->DeleteFile(f.external_file_path);
+      Status s = fs_->DeleteFile(f.external_file_path, io_opts, nullptr);
       if (!s.ok()) {
         ROCKS_LOG_WARN(
             db_options_.info_log,
@@ -810,7 +843,8 @@ Status ExternalSstFileIngestionJob::AssignGlobalSeqnoForIngestedFile(
         fs_->NewRandomRWFile(file_to_ingest->internal_file_path, env_options_,
                              &rwfile, nullptr);
     if (status.ok()) {
-      FSRandomRWFilePtr fsptr(std::move(rwfile), io_tracer_);
+      FSRandomRWFilePtr fsptr(std::move(rwfile), io_tracer_,
+                              file_to_ingest->internal_file_path);
       std::string seqno_val;
       PutFixed64(&seqno_val, seqno);
       status = fsptr->Write(file_to_ingest->global_seqno_offset, seqno_val,

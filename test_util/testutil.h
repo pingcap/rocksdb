@@ -98,10 +98,8 @@ class PlainInternalKeyComparator : public InternalKeyComparator {
 class SimpleSuffixReverseComparator : public Comparator {
  public:
   SimpleSuffixReverseComparator() {}
-
-  virtual const char* Name() const override {
-    return "SimpleSuffixReverseComparator";
-  }
+  static const char* kClassName() { return "SimpleSuffixReverseComparator"; }
+  virtual const char* Name() const override { return kClassName(); }
 
   virtual int Compare(const Slice& a, const Slice& b) const override {
     Slice prefix_a = Slice(a.data(), 8);
@@ -453,16 +451,8 @@ class SleepingBackgroundTask {
   // otherwise times out.
   // wait_time is in microseconds.
   // Returns true when times out, false otherwise.
-  bool TimedWaitUntilSleeping(uint64_t wait_time) {
-    auto abs_time = Env::Default()->NowMicros() + wait_time;
-    MutexLock l(&mutex_);
-    while (!sleeping_ || !should_sleep_) {
-      if (bg_cv_.TimedWait(abs_time)) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool TimedWaitUntilSleeping(uint64_t wait_time);
+
   void WakeUp() {
     MutexLock l(&mutex_);
     should_sleep_ = false;
@@ -476,16 +466,8 @@ class SleepingBackgroundTask {
   }
   // Similar to TimedWaitUntilSleeping.
   // Waits until the task is done.
-  bool TimedWaitUntilDone(uint64_t wait_time) {
-    auto abs_time = Env::Default()->NowMicros() + wait_time;
-    MutexLock l(&mutex_);
-    while (!done_with_sleep_) {
-      if (bg_cv_.TimedWait(abs_time)) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool TimedWaitUntilDone(uint64_t wait_time);
+
   bool WokenUp() {
     MutexLock l(&mutex_);
     return should_sleep_ == false;
@@ -883,5 +865,9 @@ Status TryDeleteDir(Env* env, const std::string& dirname);
 // Delete a directory if it exists
 void DeleteDir(Env* env, const std::string& dirname);
 
+// Creates an Env from the system environment by looking at the system
+// environment variables.
+Status CreateEnvFromSystem(const ConfigOptions& options, Env** result,
+                           std::shared_ptr<Env>* guard);
 }  // namespace test
 }  // namespace ROCKSDB_NAMESPACE

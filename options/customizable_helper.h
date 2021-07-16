@@ -9,7 +9,6 @@
 #include <unordered_map>
 
 #include "options/configurable_helper.h"
-#include "options/options_helper.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/customizable.h"
 #include "rocksdb/status.h"
@@ -61,7 +60,8 @@ static Status LoadSharedObject(const ConfigOptions& config_options,
                                std::shared_ptr<T>* result) {
   std::string id;
   std::unordered_map<std::string, std::string> opt_map;
-  Status status = ConfigurableHelper::GetOptionsMap(value, &id, &opt_map);
+  Status status =
+      ConfigurableHelper::GetOptionsMap(value, result->get(), &id, &opt_map);
   if (!status.ok()) {  // GetOptionsMap failed
     return status;
   }
@@ -75,7 +75,7 @@ static Status LoadSharedObject(const ConfigOptions& config_options,
   }
 #endif
   if (func == nullptr || !func(id, result)) {  // No factory, or it failed
-    if (id.empty() && opt_map.empty()) {
+    if (value.empty()) {
       // No Id and no options.  Clear the object
       result->reset();
       return Status::OK();
@@ -83,12 +83,13 @@ static Status LoadSharedObject(const ConfigOptions& config_options,
       return Status::NotSupported("Cannot reset object ", id);
     } else {
 #ifndef ROCKSDB_LITE
-      status = ObjectRegistry::NewInstance()->NewSharedObject(id, result);
+      status = config_options.registry->NewSharedObject(id, result);
 #else
       status = Status::NotSupported("Cannot load object in LITE mode ", id);
 #endif
       if (!status.ok()) {
-        if (config_options.ignore_unsupported_options) {
+        if (config_options.ignore_unsupported_options &&
+            status.IsNotSupported()) {
           return Status::OK();
         } else {
           return status;
@@ -119,7 +120,8 @@ static Status LoadUniqueObject(const ConfigOptions& config_options,
                                std::unique_ptr<T>* result) {
   std::string id;
   std::unordered_map<std::string, std::string> opt_map;
-  Status status = ConfigurableHelper::GetOptionsMap(value, &id, &opt_map);
+  Status status =
+      ConfigurableHelper::GetOptionsMap(value, result->get(), &id, &opt_map);
   if (!status.ok()) {  // GetOptionsMap failed
     return status;
   }
@@ -133,7 +135,7 @@ static Status LoadUniqueObject(const ConfigOptions& config_options,
   }
 #endif
   if (func == nullptr || !func(id, result)) {  // No factory, or it failed
-    if (id.empty() && opt_map.empty()) {
+    if (value.empty()) {
       // No Id and no options.  Clear the object
       result->reset();
       return Status::OK();
@@ -141,12 +143,13 @@ static Status LoadUniqueObject(const ConfigOptions& config_options,
       return Status::NotSupported("Cannot reset object ", id);
     } else {
 #ifndef ROCKSDB_LITE
-      status = ObjectRegistry::NewInstance()->NewUniqueObject(id, result);
+      status = config_options.registry->NewUniqueObject(id, result);
 #else
       status = Status::NotSupported("Cannot load object in LITE mode ", id);
 #endif  // ROCKSDB_LITE
       if (!status.ok()) {
-        if (config_options.ignore_unsupported_options) {
+        if (config_options.ignore_unsupported_options &&
+            status.IsNotSupported()) {
           return Status::OK();
         } else {
           return status;
@@ -175,7 +178,8 @@ static Status LoadStaticObject(const ConfigOptions& config_options,
                                const StaticFactoryFunc<T>& func, T** result) {
   std::string id;
   std::unordered_map<std::string, std::string> opt_map;
-  Status status = ConfigurableHelper::GetOptionsMap(value, &id, &opt_map);
+  Status status =
+      ConfigurableHelper::GetOptionsMap(value, *result, &id, &opt_map);
   if (!status.ok()) {  // GetOptionsMap failed
     return status;
   }
@@ -189,7 +193,7 @@ static Status LoadStaticObject(const ConfigOptions& config_options,
   }
 #endif
   if (func == nullptr || !func(id, result)) {  // No factory, or it failed
-    if (id.empty() && opt_map.empty()) {
+    if (value.empty()) {
       // No Id and no options.  Clear the object
       *result = nullptr;
       return Status::OK();
@@ -197,12 +201,13 @@ static Status LoadStaticObject(const ConfigOptions& config_options,
       return Status::NotSupported("Cannot reset object ", id);
     } else {
 #ifndef ROCKSDB_LITE
-      status = ObjectRegistry::NewInstance()->NewStaticObject(id, result);
+      status = config_options.registry->NewStaticObject(id, result);
 #else
       status = Status::NotSupported("Cannot load object in LITE mode ", id);
 #endif  // ROCKSDB_LITE
       if (!status.ok()) {
-        if (config_options.ignore_unsupported_options) {
+        if (config_options.ignore_unsupported_options &&
+            status.IsNotSupported()) {
           return Status::OK();
         } else {
           return status;

@@ -19,7 +19,6 @@
 #include "db/db_test_util.h"
 #include "db/log_format.h"
 #include "db/version_set.h"
-#include "env/composite_env_wrapper.h"
 #include "file/filename.h"
 #include "port/stack_trace.h"
 #include "rocksdb/cache.h"
@@ -56,14 +55,9 @@ class CorruptionTest : public testing::Test {
     // bug in recovery code. Keep it 4 for now to make the test passes.
     tiny_cache_ = NewLRUCache(100, 4);
     Env* base_env = Env::Default();
-#ifndef ROCKSDB_LITE
-    const char* test_env_uri = getenv("TEST_ENV_URI");
-    if (test_env_uri) {
-      Status s = Env::LoadEnv(test_env_uri, &base_env, &env_guard_);
-      EXPECT_OK(s);
-      EXPECT_NE(Env::Default(), base_env);
-    }
-#endif  //! ROCKSDB_LITE
+    EXPECT_OK(
+        test::CreateEnvFromSystem(ConfigOptions(), &base_env, &env_guard_));
+    EXPECT_NE(base_env, nullptr);
     env_ = new test::ErrorEnv(base_env);
     options_.wal_recovery_mode = WALRecoveryMode::kTolerateCorruptedTailRecords;
     options_.env = env_;
@@ -539,19 +533,20 @@ TEST_F(CorruptionTest, RangeDeletionCorrupted) {
   ASSERT_EQ(static_cast<size_t>(1), metadata.size());
   std::string filename = dbname_ + metadata[0].name;
 
-  std::unique_ptr<RandomAccessFile> file;
-  ASSERT_OK(options_.env->NewRandomAccessFile(filename, &file, EnvOptions()));
-  std::unique_ptr<RandomAccessFileReader> file_reader(
-      new RandomAccessFileReader(NewLegacyRandomAccessFileWrapper(file),
-                                 filename));
+  FileOptions file_opts;
+  const auto& fs = options_.env->GetFileSystem();
+  std::unique_ptr<RandomAccessFileReader> file_reader;
+  ASSERT_OK(RandomAccessFileReader::Create(fs, filename, file_opts,
+                                           &file_reader, nullptr));
 
   uint64_t file_size;
-  ASSERT_OK(options_.env->GetFileSize(filename, &file_size));
+  ASSERT_OK(
+      fs->GetFileSize(filename, file_opts.io_options, &file_size, nullptr));
 
   BlockHandle range_del_handle;
   ASSERT_OK(FindMetaBlock(
       file_reader.get(), file_size, kBlockBasedTableMagicNumber,
-      ImmutableCFOptions(options_), kRangeDelBlock, &range_del_handle));
+      ImmutableOptions(options_), kRangeDelBlock, &range_del_handle));
 
   ASSERT_OK(TryReopen());
   ASSERT_OK(test::CorruptFile(env_, filename,
@@ -882,7 +877,7 @@ TEST_F(CorruptionTest, VerifyWholeTableChecksum) {
   SyncPoint::GetInstance()->ClearAllCallBacks();
   int count{0};
   SyncPoint::GetInstance()->SetCallBack(
-      "DBImpl::VerifySstFileChecksum:mismatch", [&](void* arg) {
+      "DBImpl::VerifyFullFileChecksum:mismatch", [&](void* arg) {
         auto* s = reinterpret_cast<Status*>(arg);
         ASSERT_NE(s, nullptr);
         ++count;

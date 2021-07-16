@@ -73,6 +73,15 @@ TEST_F(DBRangeDelTest, FlushOutputHasOnlyRangeTombstones) {
   } while (ChangeOptions(kRangeDelSkipConfigs));
 }
 
+TEST_F(DBRangeDelTest, DictionaryCompressionWithOnlyRangeTombstones) {
+  Options opts = CurrentOptions();
+  opts.compression_opts.max_dict_bytes = 16384;
+  Reopen(opts);
+  ASSERT_OK(db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "dr1",
+                             "dr2"));
+  ASSERT_OK(db_->Flush(FlushOptions()));
+}
+
 TEST_F(DBRangeDelTest, CompactionOutputHasOnlyRangeTombstone) {
   do {
     Options opts = CurrentOptions();
@@ -1676,10 +1685,11 @@ TEST_F(DBRangeDelTest, OverlappedKeys) {
                                         true /* disallow_trivial_move */));
   ASSERT_EQ(3, NumTableFilesAtLevel(1));
 
-  std::vector<std::vector<FileMetaData>> files;
   ASSERT_OK(dbfull()->TEST_CompactRange(1, nullptr, nullptr, nullptr,
                                         true /* disallow_trivial_move */));
-  ASSERT_EQ(1, NumTableFilesAtLevel(2));
+  ASSERT_EQ(
+      3, NumTableFilesAtLevel(
+             2));  // L1->L2 compaction size is limited to max_compaction_bytes
   ASSERT_EQ(0, NumTableFilesAtLevel(1));
 }
 
