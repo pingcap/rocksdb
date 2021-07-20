@@ -312,9 +312,10 @@ CompactionJob::CompactionJob(
     std::vector<SequenceNumber> existing_snapshots,
     SequenceNumber earliest_write_conflict_snapshot,
     const SnapshotChecker* snapshot_checker, std::shared_ptr<Cache> table_cache,
-    EventLogger* event_logger, bool paranoid_file_checks, bool measure_io_stats,
-    const std::string& dbname, CompactionJobStats* compaction_job_stats,
-    Env::Priority thread_pri, SnapshotListFetchCallback* snap_list_callback)
+    SafeFuncQueue* write_queue, EventLogger* event_logger,
+    bool paranoid_file_checks, bool measure_io_stats, const std::string& dbname,
+    CompactionJobStats* compaction_job_stats, Env::Priority thread_pri,
+    SnapshotListFetchCallback* snap_list_callback)
     : job_id_(job_id),
       compact_(new CompactionState(compaction)),
       compaction_job_stats_(compaction_job_stats),
@@ -339,6 +340,7 @@ CompactionJob::CompactionJob(
       earliest_write_conflict_snapshot_(earliest_write_conflict_snapshot),
       snapshot_checker_(snapshot_checker),
       table_cache_(std::move(table_cache)),
+      write_queue_(write_queue),
       event_logger_(event_logger),
       bottommost_level_(false),
       paranoid_file_checks_(paranoid_file_checks),
@@ -922,6 +924,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ? nullptr
           : sub_compact->compaction->CreateSstPartitioner();
   std::string last_key_for_partitioner;
+  const size_t kYieldForWriteEvery = 255;
+  const size_t kYieldWriteTimesEvery = 4;
+  bool should_yield =
+      write_queue_ != nullptr && sub_compact->compaction->start_level() != 0;
 
   while (status.ok() && !cfd->IsDropped() && c_iter->Valid()) {
     // Invariant: c_iter.status() is guaranteed to be OK if c_iter->Valid()
@@ -956,6 +962,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     sub_compact->current_output()->meta.UpdateBoundaries(
         key, c_iter->ikey().sequence);
     sub_compact->num_output_records++;
+    if (should_yield &&
+        (sub_compact->num_output_records & kYieldForWriteEvery) == 0) {
+      for (size_t i = 0; write_queue_->RunFunc() && i < kYieldWriteTimesEvery;
+           i++)
+        ;
+    }
 
     // Close output file if it is big enough. Two possibilities determine it's
     // time to close it: (1) the current key should be this file's last key, (2)

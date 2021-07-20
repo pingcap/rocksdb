@@ -201,6 +201,7 @@ Status DBImpl::MultiBatchWriteImpl(const WriteOptions& write_options,
     WriteBatchInternal::AsyncInsertInto(
         &writer, writer.sequence, version_set, &flush_scheduler_,
         ignore_missing_faimly, this, &write_thread_.write_queue_);
+
     // Because `LaunchParallelMemTableWriters` has add `write_group->size` to `running`,
     // the value of `running` is always larger than one if the leader thread does not
     // call `CompleteParallelMemTableWriter`.
