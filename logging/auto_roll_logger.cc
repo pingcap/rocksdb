@@ -124,6 +124,7 @@ Status AutoRollLogger::TrimOldLogFiles() {
   // kKeepLogFileNum == 0. We can instead check kKeepLogFileNum != 0 but
   // it's essentially the same thing, and checking empty before accessing
   // the queue feels safer.
+  printf("old file num %lu\n", old_log_files_.size());
   while (!old_log_files_.empty() && old_log_files_.size() >= kKeepLogFileNum) {
     Status s = env_->DeleteFile(old_log_files_.front());
     // Remove the file from the tracking anyway. It's possible that

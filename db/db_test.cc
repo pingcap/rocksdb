@@ -2101,11 +2101,13 @@ TEST_F(DBTest, PurgeInfoLogs) {
   for (int mode = 0; mode <= 1; mode++) {
     if (mode == 1) {
       options.db_log_dir = dbname_ + "_logs";
+      printf("log dir %s\n", options.db_log_dir.c_str());
       env_->CreateDirIfMissing(options.db_log_dir);
     } else {
       options.db_log_dir = "";
     }
     for (int i = 0; i < 8; i++) {
+      printf("reopen %d\n", i);
       Reopen(options);
     }
 
